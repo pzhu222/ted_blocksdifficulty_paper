@@ -1,0 +1,874 @@
+This is the cleaning file for e1-4 for data in the public repo. all csv's written out of here go in ted_paper_analyses.rmd
+
+
+### Set global seed and output location
+```{r}
+# set a seed
+set.seed(42)
+
+require(knitr)         # for knitting
+library(readxl)        # for reading Excel files
+library(lme4)          # for mixed effects models 
+library(Hmisc)         # for bootstrapped confidence intervals
+library(ggeffects)     # for logistic regression outputs
+library(showtext)      # for fonts
+library(broom.mixed)   # for augmenting fitted models
+library(png)           # for working with images
+library(grid)
+library(patchwork)     # for multiple plots
+library(tidyverse)     # for everything else
+library(viridis)
+library(here)
+library(emmeans)
+library(langcog)
+library(boot)
+library(pbkrtest)
+library(kableExtra)
+
+# set the export directory using here()
+export_dir <- here("data", "clean")
+inport_dir <- here("data", "raw")
+```
+
+
+## Experiment 1 (US Adults Graded Judgments)
+
+Read in data:
+
+```{r}
+#load in build data
+df.e1_buildtask_raw <- read.csv(here(inport_dir, "e1_buildtask.csv"))
+
+#load in time data
+df.e1_time_raw <- read.csv(here(inport_dir, "e1_time_estimation.csv"))
+
+#load in difficulty data
+df.e1_difficulty_raw <- read.csv(here(inport_dir, "e1_diff_estimation.csv"))
+```
+
+Processing Build Task:
+
+```{r}
+
+# First, create a mapping of trial values to their respective labels
+build_trial_labels <- c("7_Number", 
+                        "8_Number", 
+                        "9_InitNumber", 
+                        "10_Stability", 
+                        "11_InitSorted", 
+                        "12_Number", 
+                        "13_Sampling", 
+                        "14_Stability", 
+                        "15_Number", 
+                        "16_Number", 
+                        "17_InitNumber", 
+                        "18_Stability", 
+                        "19_Pattern", 
+                        "20_Stability", 
+                        "21_Number", 
+                        "22_Number", 
+                        "23_InitNumber", 
+                        "24_Stability", 
+                        "25_InitSorted", 
+                        "26_Number", 
+                        "27_Sampling", 
+                        "28_Stability", 
+                        "29_Number", 
+                        "30_Number",
+                        "31_InitNumber",
+                        "32_Stability",
+                        "33_Pattern",
+                        "34_Stability",
+                        "35_Distance",
+                        "36_Distance")
+
+##Exclude participants
+df.e1_buildtask = subset(df.e1_buildtask_raw, df.e1_buildtask_raw$id != "BuildTask_170421_01")
+df.e1_buildtask = subset(df.e1_buildtask, df.e1_buildtask$id != "BuildTask_170426_02") #no data
+df.e1_buildtask = subset(df.e1_buildtask, df.e1_buildtask$id != "BuildTask_170526_01") #no data
+
+#factors
+df.e1_buildtask$id = factor(df.e1_buildtask$id)
+df.e1_buildtask$trial = factor(df.e1_buildtask$trial)
+
+df.e1_buildtask <- df.e1_buildtask |> 
+  na.omit() %>%
+  gather(easy_hard, build_time,c("easy", "hard")) %>%
+  select(id, trial, easy_hard, build_time) %>%
+  na.omit() %>%
+  group_by(trial,easy_hard) %>%
+  filter(id != "BuildTask_170630",
+         id != "BuildTask_170526_03") |> 
+  ungroup()
+
+# Ensure the trials are sorted in increasing order
+build_sorted_trials <- sort(unique(df.e1_buildtask$trial))
+
+# Create a named vector to map sorted trials to labels
+names(build_trial_labels) <- build_sorted_trials
+
+# Assign the 'trial' column using the mapping
+df.e1_buildtask$trial <- factor(df.e1_buildtask$trial, labels = build_trial_labels[as.character(build_sorted_trials)])
+
+
+df.e1_buildtask_summary <- df.e1_buildtask |> 
+  # get rid of trials that were not administered in the Time or Difficulty estimation
+  filter(!grepl("35_Distance", trial)) |> 
+  filter(!grepl("36_Distance", trial)) |>
+  filter(!grepl("32_Stability", trial)) |>
+  # get rid of trials that cannot be modeled
+  filter(trial != "10_Stability") |> 
+  filter(trial != "24_Stability") |> 
+  select(id, trial, build_time, easy_hard) |> 
+  group_by(trial, easy_hard) |> 
+  na.omit() |> 
+  summarize(mean_build = mean(build_time))
+```
+
+Processing Time Estimation:
+
+```{r}
+# First, create a mapping of trial values to their respective labels
+time_trial_labels <- c("7_Number", 
+                       "8_Number", 
+                       "9_InitNumber", 
+                       "10_Stability", 
+                       "11_InitSorted", 
+                       "12_Number", 
+                       "13_Sampling", 
+                       "14_Stability", 
+                       "15_Number", 
+                       "16_Number", 
+                       "17_InitNumber", 
+                       "18_Stability", 
+                       "19_Pattern", 
+                       "20_Stability", 
+                       "21_Number",
+                       "22_Number", 
+                       "23_InitNumber", 
+                       "24_Stability", 
+                       "25_InitSorted", 
+                       "26_Number",
+                       "27_Sampling", 
+                       "28_Stability", 
+                       "29_Number", 
+                       "30_Number", 
+                       "31_InitNumber",
+                       "33_Pattern", 
+                       "34_Stability", 
+                       "37_Practice")
+
+#initial cleaning
+df.e1_time <- df.e1_time_raw |> 
+  separate(trial, into = c("trial","easy_hard")) %>%
+  select(id,age,gender,trial,easy_hard,rating) |> 
+  mutate(easy_hard = factor(easy_hard, levels=c(1,2), labels=c("easy","hard"))) 
+
+df.e1_time$trial <- as.numeric(df.e1_time$trial)
+
+# Ensure the trials are sorted in increasing order
+time_sorted_trials <- sort(unique(df.e1_time$trial))
+
+# Create a named vector to map sorted trials to labels
+names(time_trial_labels) <- time_sorted_trials
+
+# Assign the 'trial' column using the mapping
+df.e1_time$trial <- factor(df.e1_time$trial, labels = time_trial_labels[as.character(time_sorted_trials)])
+
+df.e1_time_clean <- df.e1_time |> 
+  group_by(id) %>%
+  #filtering our participants who gave the same response on all trials
+  filter(sd(rating) != 0) |> 
+  ungroup() |> 
+  #get rid of warm-up trial
+  filter(trial != "37_Practice") |> 
+  # take out trials that are not modelable
+  filter(trial != "10_Stability") |> 
+  filter(trial != "24_Stability")
+
+
+df.e1_time_summary <- df.e1_time_clean |> 
+  select(id,trial,rating,easy_hard) %>%
+  #mutate(trial = all_trial) %>%
+  #select(id,trial,condition,rating) %>%
+  group_by(trial,easy_hard) %>%
+  summarise(mean_time= (mean(rating)))
+
+```
+
+Process Difficulty Data:
+
+```{r}
+
+# First, create a mapping of trial values to their respective labels
+diff_trial_labels <- c("7_Number", 
+                        "8_Number", 
+                        "9_InitNumber", 
+                        "10_Stability", 
+                        "11_InitSorted", 
+                        "12_Number", 
+                        "13_Sampling", 
+                        "14_Stability", 
+                        "15_Number", 
+                        "16_Number", 
+                        "17_InitNumber", 
+                        "18_Stability", 
+                        "19_Pattern", 
+                        "20_Stability", 
+                        "21_Number", 
+                        "22_Number", 
+                        "23_InitNumber", 
+                        "24_Stability", 
+                        "25_InitSorted", 
+                        "26_Number", 
+                        "27_Sampling", 
+                        "28_Stability", 
+                        "29_Number", 
+                        "30_Number",
+                        "31_InitNumber",
+                        "33_Pattern",
+                        "34_Stability",
+                        "35_Distance",
+                        "36_Distance")
+
+#initial cleaning
+df.e1_difficulty <- df.e1_difficulty_raw |> 
+  separate(trial, into = c("trial","easy_hard")) %>%
+  select(id,age,gender,trial,easy_hard,rating) |>
+  mutate(easy_hard = factor(easy_hard, levels=c(1,2), labels=c("easy","hard")))|>
+  group_by(id, trial) |> 
+  #trial 31 administered twice, take only the first observation
+  mutate(trial_count = row_number(trial == 31)) |> 
+  filter(!(trial == 31 & trial_count > 2)) |> 
+  select(!trial_count) |> 
+  ungroup()
+
+# Convert the 'trial' column to numeric if it is not already
+df.e1_difficulty$trial <- as.numeric(df.e1_difficulty$trial)
+
+# Ensure the trials are sorted in increasing order
+diff_sorted_trials <- sort(unique(df.e1_difficulty$trial))
+
+# Create a named vector to map sorted trials to labels
+names(diff_trial_labels) <- diff_sorted_trials
+
+# Assign the 'trial' column using the mapping
+df.e1_difficulty$trial <- factor(df.e1_difficulty$trial, labels = diff_trial_labels[as.character(diff_sorted_trials)])
+
+df.e1_difficulty_clean <- df.e1_difficulty |>
+  group_by(id) %>%
+  #get rid of participants who gave teh same answer
+  filter(sd(rating) != 0) |>
+  ungroup()
+
+df.e1_difficulty_summary <- df.e1_difficulty_clean |> 
+  filter(!grepl("35_Distance", trial)) |> 
+  filter(!grepl("36_Distance", trial)) |>
+  select(id,trial,rating,easy_hard) %>%
+  group_by(trial,easy_hard) %>%
+  summarise(mean_diff= (mean(rating))) |> 
+  # take out trials that are not modelable
+  filter(trial != "10_Stability") |> 
+  filter(trial != "24_Stability")
+
+df.e1_difficulty_exclude <- df.e1_difficulty |>
+  group_by(id) %>%
+  #get rid of participants who gave the same answer
+  filter(sd(rating) == 0) |>
+  ungroup()
+
+df.e1_difficulty_exclude |> 
+  group_by(id) |> 
+  summarize(n = n())
+
+```
+
+Now let's anonymize & export
+
+```{r}
+# Remove "BuildTask_" prefix from build task IDs
+df.e1_buildtask <- df.e1_buildtask %>%
+  mutate(id = gsub("BuildTask_", "", id))  # Remove the "BuildTask_" prefix
+
+# Create a unique list of IDs from all dataframes
+unique_ids_e1 <- unique(c(df.e1_buildtask$id, df.e1_time$id, df.e1_difficulty$id))
+
+# Generate 8-digit random numbers
+new_ids_e1 <- sample(10000000:99999999, length(unique_ids_e1), replace = FALSE)
+
+# Create mapping
+id_mapping <- setNames(new_ids_e1, unique_ids_e1)
+
+# Anonymize IDs in the build task dataframe
+df.e1_buildtask <- df.e1_buildtask %>%
+  mutate(id = id_mapping[as.character(id)])
+
+# Anonymize IDs in the time dataframe
+df.e1_time <- df.e1_time %>%
+  mutate(id = id_mapping[as.character(id)])
+
+# Anonymize IDs in the difficulty dataframe
+df.e1_difficulty <- df.e1_difficulty %>%
+  mutate(id = id_mapping[as.character(id)])
+
+# Export the dataframes
+write.csv(df.e1_buildtask, file = here(export_dir, "e1_buildtask.csv"), row.names = FALSE)
+write.csv(df.e1_time, file = here(export_dir, "e1_time.csv"), row.names = FALSE)
+write.csv(df.e1_difficulty, file = here(export_dir, "e1_difficulty.csv"), row.names = FALSE)
+```
+
+
+
+
+# Experiment 2a
+
+```{r}
+# Load data in
+df.e2adultfc_e <- read.csv(here(inport_dir, "e2a_adultfc_easy.csv"))
+
+df.e2adultfc_easy = as.data.frame(df.e2adultfc_e[which(df.e2adultfc_e$include == '1'),])
+
+df.e2adultfc_easy_drop = as.data.frame(df.e2adultfc_e[which(df.e2adultfc_e$include == '0'),])
+
+df.e2adultfc_h <- read.csv(here(inport_dir, "e2a_adultfc_hard.csv"))
+
+df.e2adultfc_hard = as.data.frame(df.e2adultfc_h[which(df.e2adultfc_h$include == '1'),])
+
+df.e2adultfc_hard_drop = as.data.frame(df.e2adultfc_h[which(df.e2adultfc_h$include == '0'),])
+
+
+# Selecting columns of interest
+df.e2adultfc_easy <- select(df.e2adultfc_easy, 
+                            id, 
+                            group, 
+                            condition, 
+                            InsR, 
+                            Sampling_Check1, 
+                            Sampling_Check2, 
+                            Age_Check1, 
+                            Age_Check2, 
+                            Sling_Check1, 
+                            Sling_Check2, 
+                            Number_TriCir, 
+                            Number_Cross, 
+                            Number_Vert, 
+                            Number_Horz, 
+                            Init_Horz, 
+                            Init_Vert, 
+                            TwoBlocks_TenBlocks, 
+                            Init_Distance, 
+                            Fin_Distance, 
+                            Init_Sorted, 
+                            Pattern_NoPattern, 
+                            Sampling, 
+                            Box_Castle, 
+                            TwoPile_Castle, 
+                            Vert_Horz, 
+                            Adult_Child, 
+                            Sling_TwoHands, 
+                            OneAgent_TwoAgent, 
+                            age, 
+                            gender,
+                            include, 
+                            include_why)
+
+df.e2adultfc_easy_drop <- select(df.e2adultfc_easy_drop, 
+                                 id, 
+                                 group, 
+                                 condition, 
+                                 InsR, 
+                                 Sampling_Check1, 
+                                 Sampling_Check2, 
+                                 Age_Check1, 
+                                 Age_Check2, 
+                                 Sling_Check1, 
+                                 Sling_Check2, 
+                                 Number_TriCir, 
+                                 Number_Cross, 
+                                 Number_Vert, 
+                                 Number_Horz, 
+                                 Init_Horz, 
+                                 Init_Vert, 
+                                 TwoBlocks_TenBlocks, 
+                                 Init_Distance, 
+                                 Fin_Distance, 
+                                 Init_Sorted, 
+                                 Pattern_NoPattern, 
+                                 Sampling, 
+                                 Box_Castle,
+                                 TwoPile_Castle, 
+                                 Vert_Horz, 
+                                 Adult_Child, 
+                                 Sling_TwoHands, 
+                                 OneAgent_TwoAgent, 
+                                 age, 
+                                 gender, 
+                                 include, 
+                                 include_why)
+
+df.e2adultfc_hard <- select(df.e2adultfc_hard, 
+                            id, 
+                            group, 
+                            condition, 
+                            InsR, 
+                            Sampling_Check1, 
+                            Sampling_Check2, 
+                            Age_Check1, 
+                            Age_Check2, 
+                            Sling_Check1, 
+                            Sling_Check2, 
+                            Number_TriCir, 
+                            Number_Cross, 
+                            Number_Vert, 
+                            Number_Horz, 
+                            Init_Horz, 
+                            Init_Vert, 
+                            TwoBlocks_TenBlocks, 
+                            Init_Distance, 
+                            Fin_Distance, 
+                            Init_Sorted, 
+                            Pattern_NoPattern, 
+                            Sampling, 
+                            Box_Castle,
+                            TwoPile_Castle, 
+                            Vert_Horz, 
+                            Adult_Child, 
+                            Sling_TwoHands, 
+                            OneAgent_TwoAgent, 
+                            age, 
+                            gender, 
+                            include, 
+                            include_why)
+
+df.e2adultfc_hard_drop <- select(df.e2adultfc_hard_drop, 
+                                 id, 
+                                 group, 
+                                 condition, 
+                                 InsR, 
+                                 Sampling_Check1, 
+                                 Sampling_Check2, 
+                                 Age_Check1, 
+                                 Age_Check2, 
+                                 Sling_Check1, 
+                                 Sling_Check2, 
+                                 Number_TriCir, 
+                                 Number_Cross, 
+                                 Number_Vert, 
+                                 Number_Horz, 
+                                 Init_Horz, 
+                                 Init_Vert, 
+                                 TwoBlocks_TenBlocks, 
+                                 Init_Distance, 
+                                 Fin_Distance, 
+                                 Init_Sorted, 
+                                 Pattern_NoPattern, 
+                                 Sampling, 
+                                 Box_Castle,
+                                 TwoPile_Castle, 
+                                 Vert_Horz, 
+                                 Adult_Child, 
+                                 Sling_TwoHands, 
+                                 OneAgent_TwoAgent, 
+                                 age, 
+                                 gender, 
+                                 include, 
+                                 include_why)
+
+
+# Merging Data Frames
+df.e2adultfc_all <- full_join(df.e2adultfc_easy, df.e2adultfc_hard)
+
+df.e2adultfc_all_drop <- full_join(df.e2adultfc_easy_drop, df.e2adultfc_hard_drop)
+
+# Selecting columns of interest in merged Data Frame
+df.e2adultfc_all <- select(df.e2adultfc_all, 
+                           id, 
+                           condition, 
+                           age, 
+                           gender, 
+                           Number_TriCir, 
+                           Number_Cross, 
+                           Number_Vert, 
+                           Number_Horz, 
+                           Init_Horz, 
+                           Init_Vert, 
+                           TwoBlocks_TenBlocks,
+                           Pattern_NoPattern, 
+                           Sampling, 
+                           TwoPile_Castle, 
+                           Vert_Horz, 
+                           Adult_Child, 
+                           Sling_TwoHands, 
+                           OneAgent_TwoAgent) 
+
+df.e2adultfc_all_drop <- select(df.e2adultfc_all_drop, 
+                                id, 
+                                condition, 
+                                age, 
+                                gender, 
+                                Number_TriCir, 
+                                Number_Cross, 
+                                Number_Vert, 
+                                Number_Horz, 
+                                Init_Horz, 
+                                Init_Vert, 
+                                TwoBlocks_TenBlocks,
+                                Pattern_NoPattern, 
+                                Sampling, 
+                                TwoPile_Castle, 
+                                Vert_Horz, 
+                                Adult_Child, 
+                                Sling_TwoHands, 
+                                OneAgent_TwoAgent) 
+
+# Reshape to long format and assign trial types
+df.e2adultfc_all_long <- df.e2adultfc_all %>%
+  gather(trial,correct,
+        Number_TriCir,
+        Number_Cross,
+        Number_Vert,
+        Number_Horz,
+        Init_Horz,
+        Init_Vert,
+        TwoBlocks_TenBlocks,
+        Pattern_NoPattern,
+        Sampling,
+        TwoPile_Castle,
+        Vert_Horz,
+        Adult_Child,
+        Sling_TwoHands,
+        OneAgent_TwoAgent) %>%
+  rename(question_type = condition) %>%
+  mutate(condition = ifelse(trial == "Number_TriCir"| trial == "Number_Cross"| trial == "Number_Vert" |trial == "Number_Horz" | trial == "TwoBlocks_TenBlocks" | trial == "TwoPile_Castle" | trial == "Vert_Horz", "Simple", ifelse(trial == "Sampling" | trial == "Pattern_NoPattern"| trial == "Init_Horz" | trial == "Init_Vert", "Complex", "Agent"))) %>%
+  na.omit()
+
+#Adults: all data drop
+df.e2adultfc_all_drop_long <- df.e2adultfc_all_drop %>%
+  gather(trial,correct,
+        Number_TriCir,
+        Number_Cross,
+        Number_Vert,
+        Number_Horz,
+        Init_Horz,
+        Init_Vert,
+        TwoBlocks_TenBlocks,
+        Pattern_NoPattern,
+        Sampling,
+        TwoPile_Castle,
+        Vert_Horz,
+        Adult_Child,
+        Sling_TwoHands,
+        OneAgent_TwoAgent) %>%
+  rename(question_type = condition) %>%
+  mutate(condition = ifelse(trial == "Number_TriCir"| trial == "Number_Cross" | trial == "Number_Vert" | trial == "Number_Horz" |trial == "TwoBlocks_TenBlocks" | trial == "TwoPile_Castle" | trial == "Vert_Horz", "Simple", ifelse(trial == "Sampling" | trial == "Pattern_NoPattern"| trial == "Init_Horz" | trial == "Init_Vert", "Complex", "Agent"))) %>%
+  na.omit()
+```
+
+
+
+Change trial names, summarize:
+
+```{r}
+# Changing trial names to new format
+df.e2adultfc_all_long <- df.e2adultfc_all_long |> 
+    mutate(trial = case_when(trial == "Number_TriCir" ~ "Number1",
+                           trial == "Number_Cross" ~ "Number2",
+                           trial == "Number_Vert" ~ "Number3",
+                           trial == "Number_Horz" ~ "Number4",
+                           trial == "Vert_Horz" ~ "Stability",
+                           trial == "TwoBlocks_TenBlocks" ~ "Number&Stability",
+                           trial == "Init_Horz" ~ "Process1",
+                           trial == "Init_Vert" ~ "Process2",
+                           trial == "Pattern_NoPattern" ~ "Pattern",
+                           trial == "Sampling" ~ "Probability",
+                           trial == "Sling_TwoHands" ~ "Agent1",
+                           trial == "Adult_Child" ~ "Agent2",
+                           trial == "OneAgent_TwoAgent" ~ "Agent3",
+                           .default = trial))
+
+# Summarize exp 2 adult results in new data frame
+df.e2adultfc_summary <- df.e2adultfc_all_long |> 
+  mutate(dataset = "US Adults") |>
+  group_by(trial) |> 
+  multi_boot_standard(col = "correct") |> 
+  mutate(dataset = "US Adults")
+
+```
+
+
+Now let's anonymize & export for e2a
+```{r}
+# Create a unique list of IDs from all dataframes
+unique_ids_e2a <- unique(c(df.e2adultfc_all$id))
+
+# Generate 8-digit random numbers
+new_ids_e2a <- sample(10000000:99999999, length(unique_ids_e2a), replace = FALSE)
+
+# Create mapping
+id_mapping <- setNames(new_ids_e2a, unique_ids_e2a)
+
+# Anonymize IDs in the build task dataframe
+df.e2adultfc_all <- df.e2adultfc_all %>%
+  mutate(id = id_mapping[as.character(id)])
+
+# Export the dataframes
+write.csv(df.e2adultfc_all, file = here(export_dir, "e2adultfc_all.csv"), row.names = FALSE)
+```
+
+
+## Experiment 2b (US Child Forced Choice)
+
+```{r}
+# Read in data
+df.e2b_childfc_raw <- read.csv(here(inport_dir, "e2b_childfc.csv"), header = T)
+
+#Change Trial Names
+df.e2b_childfc <- df.e2b_childfc_raw |> 
+    mutate(trial = case_when(trial_name == "Number_TriCir" ~ "Number1",
+                           trial_name == "Number_Cross" ~ "Number2",
+                           trial_name == "Number_Vert" ~ "Number3",
+                           trial_name == "Number_Horz" ~ "Number4",
+                           trial_name == "Stability1" ~ "Stability",
+                           trial_name == "Num_Stab" ~ "Number&Stability",
+                           trial_name == "Init_Horz" ~ "Process1",
+                           trial_name == "Init_Vert" ~ "Process2",
+                           trial_name == "Process3" ~ "Pattern",
+                           trial_name == "Sampling" ~ "Probability",
+                           trial_name == "Sling" ~ "Agent1",
+                           trial_name == "Child_Adult" ~ "Agent2",
+                           trial_name == "Cooperation" ~ "Agent3",
+                           .default = trial_name)) |> 
+  select(-trial_name)
+
+#ensure trial naming is right
+df.e2b_childfc |> 
+  group_by(trial) |> 
+  summarize(n = n())
+
+#get rid of NAs
+df.e2b_childfc <- df.e2b_childfc |> 
+  filter(!is.na(trial))
+
+```
+
+Now let's anonymize & export for e2b
+```{r}
+# Create a unique list of IDs from all dataframes
+unique_ids_e2b <- unique(df.e2b_childfc$subject)
+
+# Generate 8-digit random numbers
+new_ids_e2b <- sample(10000000:99999999, length(unique_ids_e2b), replace = FALSE)
+
+# Create mapping
+id_mapping <- setNames(as.character(new_ids_e2b), as.character(unique_ids_e2b))
+
+# Anonymize IDs, rename the column, and drop the "X" column
+df.e2b_childfc <- df.e2b_childfc %>%
+  mutate(id = as.numeric(id_mapping[as.character(subject)])) %>%
+  select(-subject, -X, -date_of_birth) %>%
+  select(id, everything())
+
+# Export the dataframes
+write.csv(df.e2b_childfc, file = here(export_dir, "e2b_childfc.csv"), row.names = FALSE)
+```
+
+
+
+## Experiment 3 (Tsimane' Children)
+
+```{r}
+
+#Read in data
+df.e3childfc_raw <- read_excel(here(inport_dir, "e3_childfc.xlsx"), sheet = 2)
+
+```
+
+Clean and Change Trial Names:
+
+```{r}
+
+# Clean data
+df.e3childfc = df.e3childfc_raw %>%
+  transmute(trial = Trial,
+            order = PresentationOrder,
+            faster = Faster,
+            counterbalancing = Counterbalancing,
+            gender = Gender,
+            age = as.numeric(Age),
+            school = Schoolig,
+            condition = Category,
+            id = Id,
+            correct = Harder_acc) %>%
+  mutate(trial = factor(trial, levels=c("1","2","3","4","5","6","7","11","12","15"), labels=c("Number_TriCir","Number_Cross","Number_Vert","Number_Horz","Init_Horz","Init_Vert","TwoBlock_TenBlock","Pattern","Sampling","Vert_Horz"))) %>%
+  mutate(condition = ifelse(trial== "Number_TriCir" | trial == "Number_Cross" | trial == "Number_Vert" | trial == "Number_Horz" | trial == "TwoBlock_TenBlock" | trial == "Vert_Horz", "Simple", "Complex")) %>%
+    na.omit() %>% # there are two kids with no bday info
+  mutate(ageBin = ifelse(age < median(age),"5-8","9-13"))
+
+
+#renaming trials
+df.e3childfc <- df.e3childfc |> 
+  mutate(trial = case_when(trial == "Number_TriCir" ~ "Number1",
+                           trial == "Number_Cross" ~ "Number2",
+                           trial == "Number_Vert" ~ "Number3",
+                           trial == "Number_Horz" ~ "Number4",
+                           trial == "Vert_Horz" ~ "Stability",
+                           trial == "TwoBlock_TenBlock" ~ "Number&Stability",
+                           trial == "Init_Horz" ~ "Process1",
+                           trial == "Init_Vert" ~ "Process2",
+                           trial == "Pattern" ~ "Pattern",
+                           trial == "Sampling" ~ "Probability",
+                           .default = trial))
+
+```
+
+Now let's anonymize & export for e3
+```{r}
+# Create a unique list of IDs from all dataframes
+unique_ids_e3 <- unique(df.e3childfc$id)
+
+# Generate 8-digit random numbers
+new_ids_e3 <- sample(10000000:99999999, length(unique_ids_e3), replace = FALSE)
+
+# Create mapping
+id_mapping <- setNames(as.character(new_ids_e3), as.character(unique_ids_e3))
+
+# Anonymize IDs in the build task dataframe
+df.e3childfc <- df.e3childfc %>%
+  mutate(id = id_mapping[as.character(id)])
+
+# Export the dataframes
+write.csv(df.e3childfc, file = here(export_dir, "e3childfc.csv"), row.names = FALSE)
+```
+
+
+## Experiment 4 (VR)
+
+Read in data:
+
+```{r}
+
+df.e4_vr_raw <- read.csv(here(inport_dir, "e4_vrdata.csv"), header = T)
+
+```
+
+Clean data:
+
+```{r}
+#Exclusions
+df.e4_vr <- df.e4_vr_raw |> 
+  filter(id != "") |> 
+  filter(Exclude. == 0) |> 
+  select(id, Friction_Level, contains("Difficulty"), contains("Sec"),
+         Gender, Age)
+
+# Renaming Trial Conditions for both difficulty and time
+e4_tower_names <- c(X5H_Difficulty = "5 Horizontal", 
+               X10H_Difficulty = "10 Horizontal", 
+               X3x3_Difficulty = "3x3", 
+               X5V_Difficulty = "5 Vertical", 
+               LShape_Difficulty = "L-Shaped", 
+               X10V_Difficulty = "10 Vertical")
+
+# Reshape difficulty data
+df.e4_vr_diff <- df.e4_vr %>% 
+  select(id, Friction_Level, contains("Difficulty"), Gender, Age) %>%
+  gather(key = "Tower_Type", 
+         value = "Difficulty",
+         X5H_Difficulty:LShape_Difficulty, 
+         factor_key = TRUE)
+
+# Reshape time data
+df.e4_vr_time <- df.e4_vr %>% 
+  select(id, Friction_Level, contains("Sec"), Gender, Age) %>%
+  gather(key = "Tower_Type", 
+         value = "Time",
+         X5H_Sec:LShape_Sec, 
+         factor_key = TRUE)
+
+# Clean up the Tower_Type names to match
+df.e4_vr_time$Tower_Type <- gsub("_Sec", "_Difficulty", df.e4_vr_time$Tower_Type)
+
+# Combine the dataframes
+df.e4_vr <- df.e4_vr_diff %>%
+  left_join(df.e4_vr_time, by = c("id", "Friction_Level", "Gender", "Age", "Tower_Type"))
+
+# Rest of processing
+df.e4_vr$Difficulty <- as.numeric(as.character(df.e4_vr$Difficulty))
+df.e4_vr$Time <- as.numeric(as.character(df.e4_vr$Time))
+df.e4_vr$Tower_Type <- factor(df.e4_vr$Tower_Type, 
+                              levels = names(e4_tower_names), 
+                              labels = e4_tower_names)
+
+# Convert columns to factor
+df.e4_vr <- df.e4_vr |> 
+  mutate(Friction_Level = as.factor(Friction_Level))
+
+
+```
+
+
+Now let's anonymize & export for e4
+```{r}
+# Anonymization and export
+unique_ids_e4 <- unique(df.e4_vr$id)
+new_ids_e4 <- sample(10000000:99999999, length(unique_ids_e4), replace = FALSE)
+id_mapping <- setNames(as.character(new_ids_e4), as.character(unique_ids_e4))
+df.e4_vr <- df.e4_vr %>%
+  mutate(id = id_mapping[as.character(id)])
+write.csv(df.e4_vr, file = here(export_dir, "e4childfc.csv"), row.names = FALSE)
+```
+
+
+## SOM: In-Person Developmental
+
+```{r}
+
+# Reading in data
+df.som_inpersondev_raw <- read.csv(here(inport_dir, "som_inperson_dev.csv"), header = T)
+
+```
+
+
+rename trials:
+
+```{r}
+
+df.som_inpersondev <- df.som_inpersondev_raw |> 
+    mutate(trial = case_when(trial == "Number_TriCir" ~ "Number1",
+                           trial == "Number_Cross" ~ "Number2",
+                           trial == "Number_Vert" ~ "Number3",
+                           trial == "Number_Horz" ~ "Number4",
+                           trial == "Vert_Horz" ~ "Stability",
+                           trial == "TwoBlock_TenBlock" ~ "Number&Stability",
+                           trial == "Init_Horz" ~ "Process1",
+                           trial == "Init_Vert" ~ "Process2",
+                           trial == "Pattern_NoPattern" ~ "Pattern",
+                           trial == "Sampling" ~ "Probability",
+                           trial == "Sling_TwoHands" ~ "Agent1",
+                           trial == "Adult_Child" ~ "Agent2",
+                           trial == "OneAgent_TwoAgent" ~ "Agent3",
+                           .default = trial)) |> 
+  mutate(gender = ifelse(gender == 1, "Female", "Male"))
+
+```
+
+
+Now let's anonymize & export for SOM
+```{r}
+# Create a unique list of IDs from all dataframes
+unique_ids_som <- unique(df.som_inpersondev$id)
+
+# Generate 8-digit random numbers
+new_ids_som <- sample(10000000:99999999, length(unique_ids_som), replace = FALSE)
+
+# Create mapping
+id_mapping <- setNames(as.character(new_ids_som), as.character(unique_ids_som))
+
+# Anonymize IDs in the build task dataframe
+df.som_inpersondev <- df.som_inpersondev %>%
+  mutate(id = id_mapping[as.character(id)]) %>%
+  select(-X)
+
+# Export the dataframes
+write.csv(df.som_inpersondev, file = here(export_dir, "som_inpersondev.csv"), row.names = FALSE)
+```

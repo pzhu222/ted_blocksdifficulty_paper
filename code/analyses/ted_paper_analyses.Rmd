@@ -1,0 +1,3149 @@
+---
+title: "ted_paper_analysis"
+output: html_document
+date: "2024-08-12"
+---
+
+#Set Everything Up
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+# clear env
+rm(list = ls())
+
+# load relevant libraries and functions
+require(knitr)         # for knitting
+library(readxl)        # for reading Excel files
+library(lme4)          # for mixed effects models 
+library(Hmisc)         # for bootstrapped confidence intervals
+library(ggeffects)     # for logistic regression outputs
+library(showtext)      # for fonts
+library(broom.mixed)   # for augmenting fitted models
+library(png)           # for working with images
+library(grid)
+library(patchwork)     # for multiple plots
+library(tidyverse)     # for everything else
+library(viridis)
+library(here)
+library(emmeans)
+library(langcog)
+library(boot)
+library(pbkrtest)
+library(kableExtra)
+
+# set default code chunk options
+knitr::opts_chunk$set(echo = T, warning = F, message = F)
+
+# set default plot theme 
+theme_set(theme_classic() + 
+            theme(text = element_text(size = 18))) 
+
+# suppress warnings about grouping 
+options(dplyr.summarise.inform = F)
+options(xtable.floating = F)
+options(xtable.timestamp = "")
+
+# set random seed
+set.seed(1)
+
+```
+
+This Markdown file is organized in the following way:
+
+Read and clean data - Experiments 1, 2a, 2b, 3, and 4
+
+Demographic information - Experiments 1, 2a, 2b, 3, and 4
+
+Analyses - Experiments 1, 2a, 2b, 3, and 4
+
+Plots - Experiments, 1, 2a, 2b, 3 and 4
+
+Supplemental Analyses - In-Person Developmental Data Collection, Merged Datasets (Lookit and In-Person Dev Datasets)
+
+# Read and Clean Data
+
+## Experiment 1 (US Adults Graded Judgments)
+
+Read in data:
+
+```{r}
+#load in build data
+df.e1_buildtask <- read.csv(here("data", "clean", "e1_buildtask.csv"))
+
+#load in time data
+df.e1_time <- read.csv(here("data", "clean", "e1_time.csv"))
+
+#load in difficulty data
+df.e1_difficulty <- read.csv(here("data", "clean", "e1_difficulty.csv"))
+```
+
+Processing Build Task:
+
+```{r}
+
+df.e1_buildtask_summary <- df.e1_buildtask |> 
+  # get rid of trials that were not administered in the Time or Difficulty estimation
+  filter(!grepl("35_Distance", trial)) |> 
+  filter(!grepl("36_Distance", trial)) |>
+  filter(!grepl("32_Stability", trial)) |>
+  # get rid of trials that cannot be modeled
+  filter(trial != "10_Stability") |> 
+  filter(trial != "24_Stability") |>  
+  select(id, trial, build_time, easy_hard) |> 
+  group_by(trial, easy_hard) |> 
+  na.omit() |> 
+  summarize(mean_build = mean(build_time))
+
+```
+
+Processing Time Estimation:
+
+```{r}
+df.e1_time_summary <- df.e1_time |> 
+  #some trials were presented twice due to a glitch, so only take first observation per participant per trial
+  group_by(id, trial, easy_hard) |>
+  filter(row_number() == 1) |>
+  ungroup() |> 
+  select(id,trial,rating,easy_hard) %>%
+  #mutate(trial = all_trial) %>%
+  #select(id,trial,condition,rating) %>%
+  group_by(trial,easy_hard) %>%
+  summarise(mean_time= (mean(rating)))
+
+```
+
+Process Difficulty Data:
+
+```{r}
+df.e1_difficulty_summary <- df.e1_difficulty |> 
+  filter(!grepl("35_Distance", trial)) |> 
+  filter(!grepl("36_Distance", trial)) |>
+  filter(trial != "10_Stability") |> 
+  filter(trial != "24_Stability") |> 
+  select(id, trial, rating, easy_hard) %>%
+  group_by(trial, easy_hard) %>%
+  summarise(mean_diff = mean(rating, na.rm = TRUE))
+
+df.e1_difficulty_exclude <- df.e1_difficulty |>
+  group_by(id) %>%
+  #get rid of participants who gave the same answer
+  filter(sd(rating) == 0) |>
+  ungroup()
+
+df.e1_difficulty_exclude |> 
+  group_by(id) |> 
+  summarize(n = n())
+
+```
+
+## Experiment 2a (US Adult Forced Choice)
+
+```{r}
+
+# Grace's code here:
+
+# Load data in
+df.e2adultfc_all <- read.csv(here("data", "clean", "e2adultfc_all.csv"))
+
+# Reshape to long format and assign trial types
+df.e2adultfc_all_long <- df.e2adultfc_all %>%
+  gather(trial,correct,
+        Number_TriCir,
+        Number_Cross,
+        Number_Vert,
+        Number_Horz,
+        Init_Horz,
+        Init_Vert,
+        TwoBlocks_TenBlocks,
+        Pattern_NoPattern,
+        Sampling,
+        TwoPile_Castle,
+        Vert_Horz,
+        Adult_Child,
+        Sling_TwoHands,
+        OneAgent_TwoAgent) %>%
+  rename(question_type = condition) %>%
+  mutate(condition = ifelse(trial == "Number_TriCir"| trial == "Number_Cross"| trial == "Number_Vert" |trial == "Number_Horz" | trial == "TwoBlocks_TenBlocks" | trial == "TwoPile_Castle" | trial == "Vert_Horz", "Simple", ifelse(trial == "Sampling" | trial == "Pattern_NoPattern"| trial == "Init_Horz" | trial == "Init_Vert", "Complex", "Agent"))) %>%
+  na.omit()
+
+
+
+# change trial names, summarize:
+
+
+# Changing trial names to new format
+df.e2adultfc_all_long <- df.e2adultfc_all_long |> 
+    mutate(trial = case_when(trial == "Number_TriCir" ~ "Number1",
+                           trial == "Number_Cross" ~ "Number2",
+                           trial == "Number_Vert" ~ "Number3",
+                           trial == "Number_Horz" ~ "Number4",
+                           trial == "Vert_Horz" ~ "Stability",
+                           trial == "TwoBlocks_TenBlocks" ~ "Number&Stability",
+                           trial == "Init_Horz" ~ "Process1",
+                           trial == "Init_Vert" ~ "Process2",
+                           trial == "Pattern_NoPattern" ~ "Pattern",
+                           trial == "Sampling" ~ "Probability",
+                           trial == "Sling_TwoHands" ~ "Agent1",
+                           trial == "Adult_Child" ~ "Agent2",
+                           trial == "OneAgent_TwoAgent" ~ "Agent3",
+                           .default = trial))
+
+# Summarize exp 2 adult results in new data frame
+df.e2adultfc_summary <- df.e2adultfc_all_long |> 
+  mutate(dataset = "US Adults") |>
+  group_by(trial) |> 
+  multi_boot_standard(col = "correct") |> 
+  mutate(dataset = "US Adults")
+
+```
+
+## Experiment 2b (US Child Forced Choice)
+
+```{r}
+# Read in data
+df.e2b_childfc <- read.csv(here("data", "clean", "e2b_childfc.csv"), header = T)
+
+```
+
+## Experiment 3 (Tsimane' Children)
+
+```{r}
+
+#Read in data
+df.e3childfc <- read_csv(here("data", "clean", "e3childfc.csv"))
+
+```
+
+
+Rock/Leaf Task:
+
+```{r}
+
+# Read in data
+df.e3_rockleaf <- read_excel(here("data", "clean", "e3_wordtask.xlsx")) |> 
+  mutate(correct = ifelse(Choice == "rock", 1, 0))
+
+```
+
+
+## Experiment 4 (VR)
+
+Read in data:
+
+```{r}
+
+df.e4_vr <- read.csv(here("data", "clean", "e4childfc.csv"), header = T)
+
+```
+
+
+
+## Modeling Results
+
+First the e2b modeling results; read and clean in one go:
+
+```{r}
+
+# Read in data and clean it
+df.e2bchild_model20_full <- read.csv(here("data", "clean", "e2b_model20.csv"), header = T) |> 
+  separate(trial_name, into = c("diff", "trial"), sep = " ") |> 
+  select(-diff) |> 
+  separate(trial, into = c("trial", "easy_hard"), sep = "_") |> 
+  mutate(easy_hard = case_when(easy_hard == 1 ~ "Easy",
+                               easy_hard == 2 ~ "Hard",
+                               .default = easy_hard)) |> 
+  select(trial, easy_hard, KE) |> 
+  filter(trial %in% c(7,8,9,12,13,14,15,16,57,19)) |> 
+  mutate(trial = case_when(trial == 7 ~ "Number_TriCir",
+                           trial == 8 ~ "Number_Vert",
+                           trial == 9 ~ "Init_Horz",
+                           trial == 12 ~ "Num_Stab",
+                           trial == 13 ~ "Sampling",
+                           trial == 14 ~ "Vert_Horz",
+                           trial == 15 ~ "Number_Cross",
+                           trial == 16 ~ "Number_Horz",
+                           trial == 57 ~ "Init_Vert",
+                           trial == 19 ~ "Pattern")) |> 
+  group_by(trial, easy_hard) |> 
+  summarize(mean_KE = mean(KE)) |> 
+  ungroup() |> 
+  pivot_wider(names_from = easy_hard,
+              values_from = mean_KE) |> 
+  mutate(ratio = (Hard/(Easy+Hard))) |> 
+  select(trial, ratio) |> 
+  mutate(trial = case_when(trial == "Number_TriCir" ~ "Number1",
+                           trial == "Number_Cross" ~ "Number2",
+                           trial == "Number_Vert" ~ "Number3",
+                           trial == "Number_Horz" ~ "Number4",
+                           trial == "Vert_Horz" ~ "Stability",
+                           trial == "Num_Stab" ~ "Number&Stability",
+                           trial == "Init_Horz" ~ "Process1",
+                           trial == "Init_Vert" ~ "Process2",
+                           trial == "Pattern" ~ "Pattern",
+                           trial == "Sampling" ~ "Probability",
+                           trial == "Sling" ~ "Agent1",
+                           trial == "Adult_Child" ~ "Agent2",
+                           trial == "Cooperation" ~ "Agent3",
+                           .default = trial))
+
+
+# Now model ablations for "No Planning" model
+
+df.e2bchild_model20_noplan <- read.csv(here("data", "clean", "e2b_model20_noplan.csv"), header = T) |> 
+  separate(trial_name, into = c("trial", "easy_hard"), sep = "_") |> 
+  mutate(easy_hard = case_when(easy_hard == 1 ~ "Easy",
+                               easy_hard == 2 ~ "Hard",
+                               .default = easy_hard)) |> 
+  select(trial, easy_hard, KE) |> 
+  filter(trial %in% c(7,8,9,12,13,14,15,16,57,19)) |> 
+  mutate(trial = case_when(trial == 7 ~ "Number_TriCir",
+                           trial == 8 ~ "Number_Vert",
+                           trial == 9 ~ "Init_Horz",
+                           trial == 12 ~ "Num_Stab",
+                           trial == 13 ~ "Sampling",
+                           trial == 14 ~ "Vert_Horz",
+                           trial == 15 ~ "Number_Cross",
+                           trial == 16 ~ "Number_Horz",
+                           trial == 57 ~ "Init_Vert",
+                           trial == 19 ~ "Pattern")) |> 
+  group_by(trial, easy_hard) |> 
+  summarize(mean_KE = mean(KE)) |> 
+  ungroup() |> 
+  pivot_wider(names_from = easy_hard,
+              values_from = mean_KE) |> 
+  mutate(ratio = (Hard/(Easy+Hard))) |> 
+  select(trial, ratio) |> 
+  mutate(trial = case_when(trial == "Number_TriCir" ~ "Number1",
+                           trial == "Number_Cross" ~ "Number2",
+                           trial == "Number_Vert" ~ "Number3",
+                           trial == "Number_Horz" ~ "Number4",
+                           trial == "Vert_Horz" ~ "Stability",
+                           trial == "Num_Stab" ~ "Number&Stability",
+                           trial == "Init_Horz" ~ "Process1",
+                           trial == "Init_Vert" ~ "Process2",
+                           trial == "Pattern" ~ "Pattern",
+                           trial == "Sampling" ~ "Probability",
+                           trial == "Sling" ~ "Agent1",
+                           trial == "Adult_Child" ~ "Agent2",
+                           trial == "Cooperation" ~ "Agent3",
+                           .default = trial)) |> 
+  mutate(ratio = ifelse(is.na(ratio), 0, ratio))
+
+
+# Model ablations for "No Physics" model
+
+df.e2bchild_model20_nophy <- read.csv(here("data", "clean", "e2b_model20_nophy.csv"), header = T) |> 
+  separate(trial_name, into = c("trial", "easy_hard"), sep = "_") |> 
+  mutate(easy_hard = case_when(easy_hard == 1 ~ "Easy",
+                               easy_hard == 2 ~ "Hard",
+                               .default = easy_hard)) |> 
+  select(trial, easy_hard, KE) |> 
+  filter(trial %in% c(7,8,9,12,13,14,15,16,57,19)) |> 
+  mutate(trial = case_when(trial == 7 ~ "Number_TriCir",
+                           trial == 8 ~ "Number_Vert",
+                           trial == 9 ~ "Init_Horz",
+                           trial == 12 ~ "Num_Stab",
+                           trial == 13 ~ "Sampling",
+                           trial == 14 ~ "Vert_Horz",
+                           trial == 15 ~ "Number_Cross",
+                           trial == 16 ~ "Number_Horz",
+                           trial == 57 ~ "Init_Vert",
+                           trial == 19 ~ "Pattern")) |> 
+  group_by(trial, easy_hard) |> 
+  summarize(mean_KE = mean(KE)) |> 
+  ungroup() |> 
+  pivot_wider(names_from = easy_hard,
+              values_from = mean_KE) |> 
+  mutate(ratio = (Hard/(Easy+Hard))) |> 
+  select(trial, ratio) |> 
+  mutate(trial = case_when(trial == "Number_TriCir" ~ "Number1",
+                           trial == "Number_Cross" ~ "Number2",
+                           trial == "Number_Vert" ~ "Number3",
+                           trial == "Number_Horz" ~ "Number4",
+                           trial == "Vert_Horz" ~ "Stability",
+                           trial == "Num_Stab" ~ "Number&Stability",
+                           trial == "Init_Horz" ~ "Process1",
+                           trial == "Init_Vert" ~ "Process2",
+                           trial == "Pattern" ~ "Pattern",
+                           trial == "Sampling" ~ "Probability",
+                           trial == "Sling" ~ "Agent1",
+                           trial == "Adult_Child" ~ "Agent2",
+                           trial == "Cooperation" ~ "Agent3",
+                           .default = trial))
+
+```
+
+Second, the e4 modeling results:
+
+```{r}
+
+# Creating vector of model names
+e4_model_names <- c("51_1" = "5 Horizontal", 
+               "52_1" = "10 Horizontal", 
+               "53_1" = "3x3", 
+               "54_1" = "5 Vertical", 
+               "55_1" = "L-Shaped", 
+               "56_1" = "10 Vertical")
+
+# Read in data for and clean full model
+df.e4_model20 <- read.csv(here("data", "clean", "e4_model20.csv"), header = T) |> 
+  group_by(trial_name) |> 
+  summarize(mean_KE_20 = mean(KE)) |> 
+  ungroup() |> 
+  separate(trial_name, into = c("Friction_Level", "Trial_ID"), sep = " ") %>%
+  mutate(Friction_Level = str_to_title(Friction_Level)) |> 
+  rename(Tower_Type = Trial_ID) |> 
+  # get rid of towers that are not in the VR set (i.e., begin with 57)
+  filter(!grepl("57", Tower_Type))
+
+df.e4_model20$Tower_Type <- factor(df.e4_model20$Tower_Type, levels = names(e4_model_names), labels = e4_model_names)
+
+# No Planning Model
+
+df.e4_model20_noplan_lowfric <- read.csv(here("data", "clean", "e4_model20_noplan_lowfric.csv"),
+                                      header = T) |> 
+  mutate(Friction_Level = "Low")
+
+df.e4_model20_noplan_highfric <- read.csv(here("data", "clean", "e4_model20_noplan_highfric.csv"),
+                                      header = T) |> 
+  mutate(Friction_Level = "High")
+
+df.e4_model20_noplan <- full_join(df.e4_model20_noplan_lowfric, 
+                                   df.e4_model20_noplan_highfric) |> 
+  mutate(Tower_Type = trial_name)
+
+df.e4_model20_noplan$Tower_Type <- factor(df.e4_model20_noplan$Tower_Type, levels = names(e4_model_names), labels = e4_model_names)
+
+df.e4_model20_noplan <- df.e4_model20_noplan |> 
+  select(-trial_name) |> 
+  filter(!is.na(Tower_Type))
+
+# No Physics Model
+
+df.e4_model20_nophy <- read.csv(here("data", "clean", "e4_model20_nophy.csv"), header = T) |> 
+  group_by(trial_name) |> 
+  summarize(mean_KE_20_nophy = mean(KE)) |> 
+  ungroup() %>%
+  separate(trial_name, into = c("Friction_Level", "Trial_ID"), sep = " ") %>%
+  mutate(Friction_Level = str_to_title(Friction_Level)) |> 
+  rename(Tower_Type = Trial_ID) |> 
+  # get rid of towers that are not in the VR set (i.e., begin with 57)
+  filter(!grepl("57", Tower_Type))
+
+df.e4_model20_nophy$Tower_Type <- factor(df.e4_model20_nophy$Tower_Type, levels = names(e4_model_names), labels = e4_model_names)
+
+df.e4_model20_nophy <- df.e4_model20_nophy |> 
+  slice(rep(1:n(), each = 2)) %>%
+  mutate(Friction_Level = rep(c("High", "Low"), times = n() / 2))
+
+```
+
+
+## SOM: In-Person Developmental
+
+```{r}
+
+# Reading in data
+df.som_inpersondev <- read.csv(here("data", "clean", "som_inpersondev.csv"), header = T)
+
+```
+
+# Demographic Information
+
+## Experiment 1 (Graded Judgments)
+
+Difficulty Estimation:
+
+```{r}
+
+#number of participants in each study
+df.e1_difficulty |> 
+  pivot_wider(names_from = trial,
+              values_from = rating) |> 
+  nrow()/2
+
+#age
+
+df.e1_difficulty |> 
+  pull(age) |> 
+  mean(na.rm = T)
+
+df.e1_difficulty |> 
+  pull(age) |> 
+  sd(na.rm = T)
+
+#gender
+df.e1_difficulty  |> 
+  pivot_wider(names_from = trial,
+              values_from = rating) |>
+  group_by(gender) |> 
+  summarize(n = n()/2)
+
+```
+
+Time Estimation:
+
+```{r}
+#number of participants
+df.e1_time |> 
+  pivot_wider(names_from = trial,
+              values_from = rating) |> 
+  nrow()/2
+
+#age
+df.e1_time |> 
+  pull(age) |> 
+  mean(na.rm = T)
+
+df.e1_time |> 
+  pull(age) |> 
+  sd(na.rm = T)
+
+#gender
+df.e1_time  |> 
+  pivot_wider(names_from = trial,
+              values_from = rating) |>
+  group_by(gender) |> 
+  summarize(n = n()/2)
+
+```
+
+```{r}
+
+#build task 
+
+#get number of participants per structure
+
+df.e1_buildtask |> 
+  group_by(trial, easy_hard) |> 
+  summarize(n = n())
+
+```
+
+
+## Experiment 2a (Adult Forced Choice) Demographics
+
+```{r}
+
+#number of participants
+df.e2adultfc_all |> 
+  nrow()
+
+#age
+df.e2adultfc_all |> 
+  pull(age) |> 
+  mean(na.rm = T)
+
+df.e2adultfc_all |> 
+  pull(age) |> 
+  sd(na.rm = T)
+
+#1 = female, 0 = male
+df.e2adultfc_all |>
+  group_by(gender) |> 
+  summarize(n = n())
+
+```
+
+
+## Experiment 2b (US Child Forced Choice) Demographics
+
+```{r}
+
+df.e2b_childfc |> 
+  select(id, age, gender, trial, correct) |> 
+  pivot_wider(names_from = trial,
+              values_from = correct) |> 
+  pull(age) |> 
+  mean()
+
+df.e2b_childfc |> 
+  select(id, age, gender, trial, correct) |> 
+  pivot_wider(names_from = trial,
+              values_from = correct) |> 
+  pull(age) |> 
+  sd()
+
+df.e2b_childfc |> 
+  select(id, age, gender, trial, correct) |> 
+  pivot_wider(names_from = trial,
+              values_from = correct) |> 
+  group_by(gender) |> 
+  summarize(n = n())
+
+```
+
+
+## Experiment 3 (Tsimane' Children) Demographics
+
+```{r}
+
+df.e3childfc |> 
+  select(id, gender, age, school, trial, correct) |> 
+  pivot_wider(names_from = trial,
+              values_from = correct) |> 
+  pull(age) |> 
+  mean()
+
+df.e3childfc |> 
+  select(id, gender, age, school, trial, correct) |> 
+  pivot_wider(names_from = trial,
+              values_from = correct) |> 
+  pull(age) |> 
+  sd()
+
+df.e3childfc |> 
+  select(id, gender, age, school, trial, correct) |> 
+  pivot_wider(names_from = trial,
+              values_from = correct) |> 
+  group_by(gender) |> 
+  summarize(n = n())
+
+df.e3childfc |> 
+  select(id, gender, age, school, trial, correct) |> 
+  pivot_wider(names_from = trial,
+              values_from = correct) |> 
+  pull(school) |> 
+  mean()
+
+df.e3childfc |> 
+  select(id, gender, age, school, trial, correct) |> 
+  pivot_wider(names_from = trial,
+              values_from = correct) |> 
+  pull(school) |> 
+  sd()
+
+df.e3childfc |> 
+  select(id, gender, age, school, trial, correct) |> 
+  pivot_wider(names_from = trial,
+              values_from = correct) |> 
+  pull(school) |> 
+  range()
+
+```
+Rock/Leaf Task
+
+```{r}
+
+df.e3_rockleaf |> 
+  pull(Age) |> 
+  mean()
+
+df.e3_rockleaf |> 
+  pull(Age) |> 
+  sd()
+
+df.e3_rockleaf |> 
+  pull(Age) |> 
+  range()
+
+df.e3_rockleaf |> 
+  group_by(Gender) |> 
+  summarize(n = n())
+
+```
+
+
+
+## Experiment 4 (VR)
+
+```{r}
+
+# Exclusions and Age/Gender summary
+df.e4_vr |> 
+  group_by(Gender = case_when(
+    Gender %in% c("Male", "Male ") ~ "Male",
+    Gender %in% c("Female", "Female ") ~ "Female",
+    Gender == "MISSINGLOCATE" ~ "No Response",
+    TRUE ~ Gender  # Keep other values unchanged
+  )) |> 
+  summarize(n = n())
+
+df.e4_vr |> 
+  group_by(Age = case_when(
+    Age == "MISSINGLOCATE" ~ "No Response",
+    TRUE ~ Age # Keep other values unchanged
+  )) |> 
+  summarize(n = n())
+
+```
+
+
+# Analyses
+
+## Experiment 1 (Graded Judgments)
+
+```{r}
+
+#combine all data
+df.e1_full_summary <- full_join(df.e1_difficulty_summary, 
+          full_join(df.e1_buildtask_summary, df.e1_time_summary))
+
+#diff and build
+cor.test(df.e1_full_summary$mean_diff, df.e1_full_summary$mean_build)
+
+#time and build
+cor.test(df.e1_full_summary$mean_time, df.e1_full_summary$mean_build)
+
+#diff and time
+cor.test(df.e1_full_summary$mean_diff, df.e1_full_summary$mean_time)
+
+```
+Permutation test on Experiment 1 data:
+
+```{r}
+
+df.e1_difficulty_forpermute <- df.e1_difficulty |> 
+  #exclude trials that need to be excluded (rows); use "starts_with"
+  filter(!grepl("10_Stability", trial)) |>
+  filter(!grepl("24_Stability", trial)) |>
+  filter(!grepl("35_Distance", trial)) |>
+  filter(!grepl("36_Distance", trial)) |>
+  filter(!grepl("32_Stability", trial)) |>
+  filter(!grepl("37_Practice", trial)) |>
+  #z-score this data
+  mutate(rating = scale(rating)) |>
+  group_by(trial, easy_hard) |> 
+  summarize(mean = mean(rating, na.rm = T)) |> 
+  mutate(study = "Difficulty")
+
+df.e1_time_forpermute <- df.e1_time |> 
+  #if duplicate rows w same id and trial and easy_hard, take the first one
+  group_by(id, trial, easy_hard) |>
+  filter(row_number() == 1) |>
+  ungroup() |>
+    #exclude trials that need to be excluded (rows); use "starts_with"
+  filter(!grepl("10_Stability", trial)) |>
+  filter(!grepl("24_Stability", trial)) |>
+  filter(!grepl("35_Distance", trial)) |>
+  filter(!grepl("36_Distance", trial)) |>
+  filter(!grepl("32_Stability", trial)) |>
+  filter(!grepl("37_Practice", trial)) |>
+  #z-score this data
+  mutate(rating = scale(rating)) |>
+  group_by(trial, easy_hard) |> 
+  summarize(mean = mean(rating, na.rm = T)) |> 
+  mutate(study = "Time")
+
+df.e1_build_forpermute <- df.e1_buildtask |> 
+    #exclude trials that need to be excluded (rows); use "starts_with"
+  filter(!grepl("10_Stability", trial)) |>
+  filter(!grepl("24_Stability", trial)) |>
+  filter(!grepl("35_Distance", trial)) |>
+  filter(!grepl("36_Distance", trial)) |>
+  filter(!grepl("32_Stability", trial)) |>
+  filter(!grepl("37_Practice", trial)) |>
+  #z-score this data
+  mutate(build_time = scale(build_time)) |>
+  group_by(trial, easy_hard) |> 
+  summarize(mean = mean(build_time, na.rm = T)) |> 
+  mutate(study = "Build")
+
+df.e1_full_forpermute <- full_join(df.e1_difficulty_forpermute,
+          full_join(df.e1_build_forpermute, df.e1_time_forpermute))
+
+#calculate observed correlations in the for permute dataset
+
+#dataframe where columns are studies and each row is a trial
+df.e1_full_forpermute_wide <- df.e1_full_forpermute |> 
+  #combine easy_hard and trial
+  mutate(trial = paste(trial, easy_hard, sep = "_")) |> 
+  select(-easy_hard) |>
+  pivot_wider(names_from = study,
+              values_from = mean)
+
+#calculating observed correlations
+obs_cor_BD <- cor(df.e1_full_forpermute_wide$Build, df.e1_full_forpermute_wide$Difficulty)
+obs_cor_BT <- cor(df.e1_full_forpermute_wide$Build, df.e1_full_forpermute_wide$Time)
+obs_cor_DT <- cor(df.e1_full_forpermute_wide$Difficulty, df.e1_full_forpermute_wide$Time)
+
+#calculate observed differences in correlations
+obs_diff_BD_DT <- obs_cor_BD - obs_cor_DT
+obs_diff_BD_BT <- obs_cor_BD - obs_cor_BT
+obs_diff_BT_DT <- obs_cor_BT - obs_cor_DT
+
+#now setting up permutation test
+
+n_perm <- 10000
+perm_cor_BD_full <- numeric(n_perm)
+perm_cor_BT_full <- numeric(n_perm)
+perm_cor_DT_full <- numeric(n_perm)
+
+diff_cor_BD_DT <- numeric(n_perm)
+diff_cor_BD_BT <- numeric(n_perm)
+diff_cor_BT_DT <- numeric(n_perm)
+
+#now permutation for loop
+
+for (i in seq_len(n_perm)) {
+  
+  # Permute 'study' separately within each (trial, easy_hard)
+  df.e1_perm <- df.e1_full_forpermute %>%
+    group_by(trial, easy_hard) %>%
+    mutate(study = sample(study)) %>%
+    ungroup()
+  
+  df.e1_perm_studycols <- df.e1_perm |> 
+      #combine easy_hard and trial
+    mutate(trial = paste(trial, easy_hard, sep = "_")) |>
+    select(-easy_hard) |>
+    pivot_wider(names_from = study,
+              values_from = mean)
+  
+  #compute correlations of means for permuted data
+  
+  perm_cor_BD <- cor(df.e1_perm_studycols$Build, df.e1_perm_studycols$Difficulty, use = "complete.obs")
+  perm_cor_BT <- cor(df.e1_perm_studycols$Build, df.e1_perm_studycols$Time, use = "complete.obs")
+  perm_cor_DT <- cor(df.e1_perm_studycols$Difficulty, df.e1_perm_studycols$Time, use = "complete.obs")
+  
+  #store differences in correlations
+  diff_cor_BD_DT[i] <- perm_cor_BD - perm_cor_DT
+  diff_cor_BD_BT[i] <- perm_cor_BD - perm_cor_BT
+  diff_cor_BT_DT[i] <- perm_cor_BT - perm_cor_DT
+  
+  perm_cor_BD_full[i] <- perm_cor_BD
+  perm_cor_BT_full[i] <- perm_cor_BT
+  perm_cor_DT_full[i] <- perm_cor_DT
+}
+
+#compute p-values now
+p_BD_DT <- mean(diff_cor_BD_DT <= obs_diff_BD_DT)
+p_BD_BT <- mean(diff_cor_BD_BT <= obs_diff_BD_BT)
+p_BT_DT <- mean(diff_cor_BT_DT <= obs_diff_BT_DT)
+
+p_BD_DT
+p_BD_BT
+p_BT_DT
+
+```
+
+
+Differences within pairs for actual build times:
+
+```{r}
+
+#change to factors
+df.e1_buildtask$trial <- as.factor(df.e1_buildtask$trial)
+
+# Initialize an empty list to store t-test results
+t_test_results_buildtime <- list()
+
+# Iterate over each level in the 'cat' column
+for (level in levels(df.e1_buildtask$trial)) {
+  # Subset the data for the current level
+  subset_data <- subset(df.e1_buildtask, trial == level)
+  
+  # Perform the t-test
+  t_test_buildtime <- t.test(build_time ~ easy_hard, data = subset_data)
+  
+  # Store the t-test result in the list with t-value and p-value
+  t_test_results_buildtime[[level]] <- data.frame(trial = level, 
+                                        t_value = t_test_buildtime$statistic, 
+                                        p_value = t_test_buildtime$p.value)
+}
+
+# Combine the list into a single dataframe
+t_test_df_buildtime <- do.call(rbind, t_test_results_buildtime)
+
+# Filtering trials
+t_test_df_buildtime |> 
+  filter(p_value > .05) |> 
+  filter(trial != "35_Distance",
+        trial != "36_Distance")
+
+```
+
+SOM: Compute correlations WITH trials for which there are modeling difficulties:
+
+```{r}
+
+#build first
+
+df.e1_buildtask_somfullset <- df.e1_buildtask |> 
+  # get rid of trials that were not administered in the Time or Difficulty estimation
+  filter(!grepl("35_Distance", trial)) |> 
+  filter(!grepl("36_Distance", trial)) |>
+  filter(!grepl("32_Stability", trial)) |>
+  # get rid of trials that cannot be modeled
+  # filter(trial != "10_Stability") |> 
+  # filter(trial != "24_Stability") |> 
+  select(id, trial, build_time, easy_hard) |> 
+  group_by(trial, easy_hard) |> 
+  na.omit() |> 
+  summarize(mean_build = mean(build_time))
+
+#time next
+
+df.e1_time_somfullset <- df.e1_time |> 
+  group_by(id) %>%
+  #filtering our participants who gave the same response on all trials
+  filter(sd(rating) != 0) |> 
+  ungroup() |> 
+  #get rid of warm-up trial
+  filter(trial != "37_Practice") 
+  # take out trials that are not modelable
+  # filter(trial != "10_Stability") |> 
+  # filter(trial != "24_Stability")
+
+df.e1_time_somfullset <- df.e1_time_somfullset |> 
+  select(id,trial,rating,easy_hard) %>%
+  #mutate(trial = all_trial) %>%
+  #select(id,trial,condition,rating) %>%
+  group_by(trial,easy_hard) %>%
+  summarise(mean_time= (mean(rating)))
+
+# now difficulty
+
+df.e1_difficulty_somfullset <- df.e1_difficulty |> 
+  filter(!grepl("35_Distance", trial)) |> 
+  filter(!grepl("36_Distance", trial)) |>
+  select(id,trial,rating,easy_hard) %>%
+  group_by(trial,easy_hard) %>%
+  summarise(mean_diff= (mean(rating))) 
+  # take out trials that are not modelable
+  # filter(trial != "10_Stability") |> 
+  # filter(trial != "24_Stability")
+
+#now join them
+df.e1_somfullset <- full_join(df.e1_buildtask_somfullset,
+          full_join(df.e1_time_somfullset, df.e1_difficulty_somfullset))
+
+#first diff and build
+cor.test(df.e1_somfullset$mean_build, df.e1_somfullset$mean_diff)
+
+#now time and build
+cor.test(df.e1_somfullset$mean_build, df.e1_somfullset$mean_time)
+
+#now diff and time
+cor.test(df.e1_somfullset$mean_diff, df.e1_somfullset$mean_time)
+
+
+```
+
+
+## Experiment 2a (Adult Forced Choice)
+
+```{r}
+
+# Linear mixed effect model predictions
+model_e2adultfc <- glmer(correct ~ 1 + trial + question_type + (1|id), 
+      data = df.e2adultfc_all_long, family = "binomial",
+      control = glmerControl(optimizer = "bobyqa",
+                             optCtrl = list(maxfun = 2e5)))
+
+
+ggpredict(model = model_e2adultfc,
+          type = "fe")
+
+```
+
+## Experiment 2b (Child Forced Choice)
+
+```{r}
+
+# Linear mixed effects model for children
+model_e2bchildfc <- glmer(correct ~ 1 + trial + age + question_type + trial:age + (1|id),
+                         family = "binomial",
+      data = df.e2b_childfc,
+      control = glmerControl(optimizer = "bobyqa",
+                             optCtrl = list(maxfun = 2e5)))
+
+model_e2bchildfc |> 
+  joint_tests()
+```
+
+Overall Regression
+
+```{r}
+
+# First regression across age
+ggpredict(model = model_e2bchildfc,
+          type = "fe")
+
+```
+
+Age point analysis:
+
+```{r}
+
+# Now do the age point analysis
+
+e2bchild_age_range <- seq(3, 6, by = .01)
+
+e2bchildfc_ageanalysis <- ggpredict(model = model_e2bchildfc,
+          terms = c("age [e2bchild_age_range]", "trial"),
+          type = "fe")
+
+df.e2bchild_ageanalysis <- data.frame(age = e2bchildfc_ageanalysis$x,
+           trial = e2bchildfc_ageanalysis$group,
+           lowerCI = e2bchildfc_ageanalysis$conf.low)
+
+df.e2bchild_ageanalysis <- df.e2bchild_ageanalysis |> 
+  group_by(trial) |> 
+  mutate(passed = ifelse(any(lowerCI > 0.50), "passed", "did not pass .5")) |> 
+  ungroup()
+
+df.e2bchild_passedmin <- df.e2bchild_ageanalysis %>%
+  filter(passed == "passed",
+         lowerCI > .5) %>%
+  group_by(trial) %>%
+  summarise(min_age = min(age))
+
+df.e2bchild_nopass <- df.e2bchild_ageanalysis |> 
+  filter(passed == "did not pass .5") |> 
+  group_by(trial) |> 
+  summarise(min_age = "did not pass .5")
+
+# Predictions and generate html table
+df.e2bchildagepredictions <- rbind(df.e2bchild_passedmin, df.e2bchild_nopass)
+
+options(max.print = nrow(df.e2bchildagepredictions))
+
+kable(df.e2bchildagepredictions,
+      format = "html", table.attr = "style = \"color: white;\"",
+      caption = "Lookit")
+
+#using this for illustration of github
+
+```
+
+
+EXPLORATORY ANALYSIS: JUST WITH QUESTION HARDER
+
+```{r rows.print=25}
+
+# Organizing DF and creating LME Model
+df.e2b_childfc |> 
+  group_by(question_type) |> 
+  summarize(n = n())
+
+df.e2b_childfc_harder <- df.e2b_childfc |> 
+  filter(question_type == "harder")
+
+df.e2b_childfc_harder |> 
+  pull(correct) |> 
+  mean()
+
+model_e2bchildfc_harder <- glmer(correct ~ 1 + trial + age + trial:age + (1|id),
+                         family = "binomial",
+      data = df.e2b_childfc_harder,
+      control = glmerControl(optimizer = "bobyqa",
+                             optCtrl = list(maxfun = 2e5)))
+
+
+# Now do the age point analysis
+
+e2bchild_age_range <- seq(3, 6, by = .01)
+
+e2bchildfc_ageanalysis_harder <- ggpredict(model = model_e2bchildfc_harder,
+          terms = c("age [e2bchild_age_range]", "trial"),
+          type = "fe")
+
+df.e2bchild_ageanalysis_harder <- data.frame(age = e2bchildfc_ageanalysis_harder$x,
+           trial = e2bchildfc_ageanalysis_harder$group,
+           lowerCI = e2bchildfc_ageanalysis_harder$conf.low)
+
+df.e2bchild_ageanalysis_harder <- df.e2bchild_ageanalysis_harder |> 
+  group_by(trial) |> 
+  mutate(passed = ifelse(any(lowerCI > 0.50), "passed", "did not pass .5")) |> 
+  ungroup()
+
+df.e2bchild_passedmin_harder <- df.e2bchild_ageanalysis_harder %>%
+  filter(passed == "passed",
+         lowerCI > .5) %>%
+  group_by(trial) %>%
+  summarise(min_age = min(age))
+
+df.e2bchild_nopass_harder <- df.e2bchild_ageanalysis_harder |> 
+  filter(passed == "did not pass .5") |> 
+  group_by(trial) |> 
+  summarise(min_age = "did not pass .5")
+
+df.e2bchildagepredictions_harder <- rbind(df.e2bchild_passedmin_harder, df.e2bchild_nopass_harder)
+
+kable(df.e2bchildagepredictions_harder,
+      format = "html", table.attr = "style = \"color: white;\"",
+      caption = "Lookit Harder QT")
+
+#now just look at performance by question type
+df.e2b_childfc |> 
+  group_by(question_type, trial) |> 
+  summarize(mean_correct = mean(correct)) |> 
+  ungroup() |> 
+  pivot_wider(names_from = question_type,
+              values_from = mean_correct) |> 
+  mutate(diff_easyhard = harder - easier)
+
+# Create the plot using ggeffects
+p.e2bchildfc_ageanalysis_harder <- e2bchildfc_ageanalysis_harder |> 
+  plot(colors = "bw",
+       facet = TRUE)
+
+# Add the title using ggplot2 functions
+p.e2bchildfc_ageanalysis_harder + ggtitle("Question Type Harder")
+
+```
+
+
+EXPLORATORY ANALYSIS: JUST WITH QUESTION EASIER
+
+```{r}
+
+# Organizing DF and creating LME Model
+df.e2b_childfc |> 
+  group_by(question_type) |> 
+  summarize(n = n())
+
+df.e2b_childfc_easier <- df.e2b_childfc |> 
+  filter(question_type == "easier")
+
+df.e2b_childfc_easier |> 
+  pull(correct) |> 
+  mean()
+
+model_e2bchildfc_easier <- glmer(correct ~ 1 + trial + age + trial:age + (1|id),
+                         family = "binomial",
+      data = df.e2b_childfc_easier,
+      control = glmerControl(optimizer = "bobyqa",
+                             optCtrl = list(maxfun = 2e5)))
+
+
+# Now do the age point analysis
+
+e2bchild_age_range <- seq(3, 6, by = .01)
+
+e2bchildfc_ageanalysis_easier <- ggpredict(model = model_e2bchildfc_easier,
+          terms = c("age [e2bchild_age_range]", "trial"),
+          type = "fe")
+
+df.e2bchild_ageanalysis_easier <- data.frame(age = e2bchildfc_ageanalysis_easier$x,
+           trial = e2bchildfc_ageanalysis_easier$group,
+           lowerCI = e2bchildfc_ageanalysis_easier$conf.low)
+
+df.e2bchild_ageanalysis_easier <- df.e2bchild_ageanalysis_easier |> 
+  group_by(trial) |> 
+  mutate(passed = ifelse(any(lowerCI > 0.50), "passed", "did not pass .5")) |> 
+  ungroup()
+
+df.e2bchild_passedmin_easier <- df.e2bchild_ageanalysis_easier %>%
+  filter(passed == "passed",
+         lowerCI > .5) %>%
+  group_by(trial) %>%
+  summarise(min_age = min(age))
+
+df.e2bchild_nopass_easier <- df.e2bchild_ageanalysis_easier |> 
+  filter(passed == "did not pass .5") |> 
+  group_by(trial) |> 
+  summarise(min_age = "did not pass .5")
+
+df.e2bchildagepredictions_easier <- rbind(df.e2bchild_passedmin_easier, df.e2bchild_nopass_easier)
+
+kable(df.e2bchildagepredictions_easier,
+      format = "html", table.attr = "style = \"color: white;\"",
+      caption = "Lookit easier QT")
+
+# Create the plot using ggeffects
+p.e2bchildfc_ageanalysis_easier <- e2bchildfc_ageanalysis_easier |> 
+  plot(colors = "bw",
+       facet = TRUE)
+
+# Add the title using ggplot2 functions
+p.e2bchildfc_ageanalysis_easier + ggtitle("Question Type Easier")
+
+```
+
+
+EXPLORATORY ANALYSIS: Just Trials which showed marked difference in easy/hard; is there an effect of easy/hard?
+
+```{r}
+
+df.e2b_childfc_patterntrials <- df.e2b_childfc |> 
+  filter(trial == "Pattern")
+
+#now t-test
+t.test(correct ~ question_type,
+       data = df.e2b_childfc_patterntrials)
+
+#what about number 4?
+df.e2b_childfc_number4trial <- df.e2b_childfc |> 
+  filter(trial == "Number4")
+
+t.test(correct ~ question_type,
+       data = df.e2b_childfc_number4trial)
+
+#what about agent2?
+
+df.e2b_childfc_agent2trial <- df.e2b_childfc |> 
+  filter(trial == "Agent2")
+
+t.test(correct ~ question_type,
+       data = df.e2b_childfc_agent2trial)
+
+#plot with easy/hard
+e2bchildfc_ageanalysis_easyhard <- ggpredict(model = model_e2bchildfc,
+          terms = c("age [e2bchild_age_range]", "trial", "question_type"),
+          type = "fe")
+
+df.e2bchildfc_ageanalysis_easyhard <- data.frame(e2bchildfc_ageanalysis_easyhard)
+```
+
+
+## Experiment 3 (Tsimane' Children)
+
+```{r}
+
+# Creating model here
+model_e3childfc <- glmer(correct ~ 1 + trial + age + trial:age + (1|id),
+                         family = "binomial",
+                         control = glmerControl(optimizer = "bobyqa",
+                         optCtrl = list(maxfun = 2e5)), data = df.e3childfc)
+
+model_e3childfc |> 
+  summary()
+```
+
+Across age:
+
+```{r}
+
+ggpredict(model = model_e3childfc,
+          type = "fe")
+
+```
+
+Age estimates:
+
+```{r}
+
+e3child_age_range <- seq(5, 13, by = .01)
+
+e3childfc_predict <- ggpredict(model = model_e3childfc,
+          terms = c("age [e3child_age_range]", "trial"),
+          type = "fe")
+
+df.e3child_predict <- data.frame(age = e3childfc_predict$x,
+           trial = e3childfc_predict$group,
+           lowerCI = e3childfc_predict$conf.low)
+
+df.e3child_predict <- df.e3child_predict |> 
+  group_by(trial) |> 
+  mutate(passed = ifelse(any(lowerCI > 0.50), "passed", "did not pass .5")) |> 
+  ungroup()
+
+df.e3child_passedmin <- df.e3child_predict %>%
+  filter(passed == "passed",
+         lowerCI > .5) %>%
+  group_by(trial) %>%
+  summarise(min_age = min(age))
+
+df.e3child_nopass <- df.e3child_predict |> 
+  filter(passed == "did not pass .5") |> 
+  group_by(trial) |> 
+  summarise(min_age = "did not pass .5")
+
+df.e3childagepredictions <- rbind(df.e3child_passedmin, df.e3child_nopass) |> 
+  mutate(min_age = as.numeric(min_age))
+
+options(max.print = 10000)
+
+print(df.e3childagepredictions)
+```
+
+Rock/Leaf Task:
+
+```{r}
+#binomial test
+binom.test(x = sum(df.e3_rockleaf$correct),
+           n = nrow(df.e3_rockleaf),
+           p = .5)
+
+# Creating model
+model_e3_rockleaf <- glm(correct ~ Age*Schooling,
+    data = df.e3_rockleaf)
+
+model_e3_rockleaf |> 
+  joint_tests()
+
+```
+
+EXPlORATORY ANALYSIS: Regression with schooling
+
+```{r rows.print = 25}
+# Creating Model
+model_e3childfc_withschooling <- glmer(correct ~ 1 + trial + age + trial:age + school + +
+                           (1|id),
+                         family = "binomial",
+                         control = glmerControl(optimizer = "bobyqa",
+                                                optCtrl = list(maxfun = 2e5)),
+      data = df.e3childfc)
+
+model_e3childfc_withschooling |> 
+  joint_tests()
+
+```
+
+Compute the differences in mean ages across Experiments 2b and 3
+
+```{r}
+
+# Estimated age of success (> 50% of children correct)
+df.e2bchildagepredictions <- df.e2bchildagepredictions |> 
+  mutate(e2b_min_age = case_when(min_age == "did not pass .5" ~ NA,
+                             .default = as.numeric(min_age))) |> 
+  select(!min_age)
+
+df.e3childagepredictions <- df.e3childagepredictions |> 
+  mutate(e3_min_age = case_when(min_age == "did not pass .5" ~ NA,
+                             .default = min_age)) |> 
+  select(!min_age)
+
+# Difference in estimated age of success (US and Tsimane' children)
+df.e2band3agepredictions <- full_join(df.e2bchildagepredictions, df.e3childagepredictions) |> 
+  mutate(diff_age_e2band3 = e3_min_age - e2b_min_age)
+
+mean(df.e2band3agepredictions$diff_age_e2band3, na.rm = T)
+
+```
+
+## Experiment 4 (VR)
+
+Effect of Difficulty
+
+```{r}
+
+# Creating and ordering by verticality (higher is more vertical here)
+df.e4_vr <- df.e4_vr |> 
+    mutate(verticality = ifelse(Tower_Type == "5 Horizontal", 1,
+                ifelse(Tower_Type == "10 Horizontal", 1,
+                       ifelse(Tower_Type == "3x3", 3,
+                              ifelse(Tower_Type == "5 Vertical", 5,
+                                     ifelse(Tower_Type == "L-Shaped", 6,
+                                            ifelse(Tower_Type == "10 Vertical", 10, NA)))))))
+
+# LME main effect of verticality and friction on difficulty and interaction
+lmer(Difficulty ~ verticality*Friction_Level + (1|id), 
+     data = df.e4_vr) |> 
+  joint_tests()
+
+```
+
+## Modeling (Experiment 2b)
+
+Compute overall correlation:
+
+```{r}
+# Summary DF of e2b
+df.e2bchildfc_summary <- df.e2b_childfc |> 
+  group_by(trial) |> 
+  multi_boot_standard(col = "correct") |> 
+  mutate(dataset = "US Children") |> 
+  filter(!is.na(trial))
+
+#Joining e2b model and data
+df.e2b_modelfull_and_data <- full_join(df.e2bchild_model20_full,
+                                       df.e2bchildfc_summary) |> 
+  filter(!is.na(ratio))
+
+
+# Pearson correlation
+cor.test(df.e2b_modelfull_and_data$ratio, df.e2b_modelfull_and_data$mean)
+
+```
+
+
+Now by age, first making the dataframes:
+
+```{r}
+
+# Creating summary Data Frames
+df.e2b_childfc_3summary <- df.e2b_childfc |> 
+  filter(age_rounded == 3) |> 
+  group_by(trial) |> 
+  summarize(mean_correct_threes = mean(correct))
+
+df.e2b_childfc_4summary <- df.e2b_childfc |> 
+  filter(age_rounded == 4) |> 
+  group_by(trial) |> 
+  summarize(mean_correct_fours = mean(correct))
+
+df.e2b_childfc_5summary <- df.e2b_childfc |> 
+  filter(age_rounded == 5) |> 
+  group_by(trial) |> 
+  summarize(mean_correct_fives = mean(correct))
+
+# Joining summary data frames by trial
+df.e2b_modelfull_and_dataagebins <- full_join(df.e2b_childfc_3summary,
+                                              full_join(df.e2b_childfc_4summary,
+                                                        full_join(df.e2b_childfc_5summary, df.e2bchild_model20_full))) |> 
+  filter(!is.na(ratio))
+
+```
+
+
+Correlations with full model
+
+```{r}
+# Corr with three year olds
+cor.test(df.e2b_modelfull_and_dataagebins$mean_correct_threes,
+         df.e2b_modelfull_and_dataagebins$ratio)
+
+# Corr with four year olds
+cor.test(df.e2b_modelfull_and_dataagebins$mean_correct_fours,
+         df.e2b_modelfull_and_dataagebins$ratio)
+
+# Corr with five year olds
+cor.test(df.e2b_modelfull_and_dataagebins$mean_correct_fives,
+         df.e2b_modelfull_and_dataagebins$ratio)
+```
+
+Model ablations (no planning model):
+
+```{r}
+
+# Joining summary df's
+df.e2b_modelnoplan_and_dataagebins <- full_join(df.e2b_childfc_3summary,
+                                              full_join(df.e2b_childfc_4summary,
+                                                        full_join(df.e2b_childfc_5summary, df.e2bchild_model20_noplan))) |> 
+  filter(!is.na(ratio))
+
+# Corr with no planning model
+cor.test(df.e2b_modelnoplan_and_dataagebins$mean_correct_threes, 
+         df.e2b_modelnoplan_and_dataagebins$ratio)
+
+cor.test(df.e2b_modelnoplan_and_dataagebins$mean_correct_fours, 
+         df.e2b_modelnoplan_and_dataagebins$ratio)
+
+cor.test(df.e2b_modelnoplan_and_dataagebins$mean_correct_fives, 
+         df.e2b_modelnoplan_and_dataagebins$ratio)
+
+```
+
+Model ablation (no physics):
+
+```{r}
+
+# Joining df's
+df.e2b_modelnophy_and_dataagebins <- full_join(df.e2b_childfc_3summary,
+                                              full_join(df.e2b_childfc_4summary,
+                                                        full_join(df.e2b_childfc_5summary, df.e2bchild_model20_nophy))) |> 
+  filter(!is.na(ratio))
+
+
+# Corr test with no physics model
+cor.test(df.e2b_modelnophy_and_dataagebins$mean_correct_threes, 
+         df.e2b_modelnophy_and_dataagebins$ratio)
+
+cor.test(df.e2b_modelnophy_and_dataagebins$mean_correct_fours, 
+         df.e2b_modelnophy_and_dataagebins$ratio)
+
+cor.test(df.e2b_modelnophy_and_dataagebins$mean_correct_fives, 
+         df.e2b_modelnophy_and_dataagebins$ratio)
+
+```
+
+Bootstrapping test E2B: full model vs. no physics overall
+```{r}
+
+# Create a wide data frame for bootstrapping
+df.e2b_childfc_boot_wide <- df.e2b_childfc |>
+  select(id, age, trial, correct) |>
+  #get rid of agent trials
+  filter(!grepl("Agent", trial)) |>
+  pivot_wider(names_from = trial,
+              values_from = correct)
+
+df.e2b_fullmodel_nophy_boot <- full_join(df.e2b_modelfull_and_data,
+                                    df.e2bchild_model20_nophy,
+                                    by = c("trial")) |>
+  select(trial, fullmodel = ratio.x, nophy = ratio.y)
+
+# Function to calculate the difference in correlations
+diff_cor_e2b_fullvsnophy <- function(data, indices) {
+  boot_sample <- data[indices, ]
+
+  boot_means <- boot_sample |>
+    pivot_longer(cols = -c(id, age),
+               names_to = "trial",
+               values_to = "correct") |>
+    group_by(trial) |>
+    summarize(mean_correct = mean(correct, na.rm = TRUE))
+
+  joined_data <- left_join(boot_means,
+                           df.e2b_fullmodel_nophy_boot,
+                           by = c("trial"))
+
+  cor_model1 <- cor(joined_data$mean_correct, joined_data$fullmodel)
+  cor_model2 <- cor(joined_data$mean_correct, joined_data$nophy)
+
+  return(cor_model1 - cor_model2)
+}
+
+boot_results_e2b_fullvsnophy <- boot(
+  data = df.e2b_childfc_boot_wide,
+  statistic = diff_cor_e2b_fullvsnophy,
+  R = 1000
+)
+
+print(boot_results_e2b_fullvsnophy)
+
+boot.ci(boot_results_e2b_fullvsnophy)
+
+```
+
+Bootstrapping test E2B: full model vs. no physics just fives
+```{r}
+
+# Create a wide data frame for bootstrapping
+df.e2b_childfc_boot_fives_wide <- df.e2b_childfc |>
+  select(id, age, trial, correct) |>
+  filter(age >= 5) |>
+  #get rid of agent trials
+  filter(!grepl("Agent", trial)) |>
+  pivot_wider(names_from = trial,
+              values_from = correct)
+
+df.e2b_fullmodel_nophy_boot_fives <- full_join(df.e2b_modelfull_and_data,
+                                    df.e2bchild_model20_nophy,
+                                    by = c("trial")) |>
+  select(trial, fullmodel = ratio.x, nophy = ratio.y)
+
+# Function to calculate the difference in correlations
+diff_cor_e2b_fullvsnophy <- function(data, indices) {
+  boot_sample <- data[indices, ]
+
+  boot_means <- boot_sample |>
+    pivot_longer(cols = -c(id, age),
+               names_to = "trial",
+               values_to = "correct") |>
+    group_by(trial) |>
+    summarize(mean_correct = mean(correct, na.rm = TRUE))
+
+  joined_data <- left_join(boot_means,
+                           df.e2b_fullmodel_nophy_boot,
+                           by = c("trial"))
+
+  cor_model1 <- cor(joined_data$mean_correct, joined_data$fullmodel)
+  cor_model2 <- cor(joined_data$mean_correct, joined_data$nophy)
+
+  return(cor_model1 - cor_model2)
+}
+
+boot_results_e2b_fives_fullvsnophy <- boot(
+  data = df.e2b_childfc_boot_fives_wide,
+  statistic = diff_cor_e2b_fullvsnophy,
+  R = 1000
+)
+
+print(boot_results_e2b_fives_fullvsnophy)
+
+boot.ci(boot_results_e2b_fives_fullvsnophy)
+
+```
+
+## Modeling (Experiment 3; same as e2b model predictions)
+
+First, make median split data frame by age:
+
+```{r}
+
+df.e3childfc |> 
+  mutate(median_age = ifelse(age < median(age), "Younger", "Older")) |> 
+  group_by(median_age) |> 
+  summarize(n = n())
+
+df.e3childfc_younger <- df.e3childfc |> 
+  mutate(median_age = ifelse(age < median(age), "Younger", "Older")) |> 
+  filter(median_age == "Younger") |> 
+  group_by(trial) |> 
+  summarize(mean_younger = mean(correct))
+
+df.e3childfc_older <- df.e3childfc |> 
+  mutate(median_age = ifelse(age < median(age), "Younger", "Older")) |> 
+  filter(median_age == "Older") |> 
+  group_by(trial) |> 
+  summarize(mean_older = mean(correct))
+
+df.e3childfc_mediansplit_summary <- full_join(df.e3childfc_younger,
+                                              df.e3childfc_older)
+
+```
+
+Full model:
+
+```{r}
+
+df.e3_modelfull_and_data <- full_join(df.e3childfc_mediansplit_summary,
+                                      df.e2bchild_model20_full)
+
+cor.test(df.e3_modelfull_and_data$mean_younger,
+         df.e3_modelfull_and_data$ratio)
+
+cor.test(df.e3_modelfull_and_data$mean_older,
+         df.e3_modelfull_and_data$ratio)
+
+```
+
+Model ablations (no planning)
+
+```{r}
+
+df.e3_modelnoplan_and_data <- full_join(df.e3childfc_mediansplit_summary,
+                                      df.e2bchild_model20_noplan)
+
+cor.test(df.e3_modelnoplan_and_data$mean_younger,
+         df.e3_modelnoplan_and_data$ratio)
+
+cor.test(df.e3_modelnoplan_and_data$mean_older,
+         df.e3_modelnoplan_and_data$ratio)
+
+```
+
+
+
+Model Ablation (No physics)
+```{r}
+
+df.e3_modelnophy_and_data <- full_join(df.e3childfc_mediansplit_summary,
+                                      df.e2bchild_model20_nophy)
+
+cor.test(df.e3_modelnophy_and_data$mean_younger,
+         df.e3_modelnophy_and_data$ratio)
+
+cor.test(df.e3_modelnophy_and_data$mean_older,
+         df.e3_modelnophy_and_data$ratio)
+
+```
+
+Bootstrapped test of correlations for E3: full model vs. no physics in accounting for older children (median split)
+
+```{r}
+
+# Create a wide data frame for bootstrapping
+
+df.e3_childfc_boot_wide <- df.e3childfc |>
+  #median split to get only the older half of children
+  mutate(median_age = ifelse(age < median(age), "Younger", "Older")) |>
+  filter(median_age == "Older") |>
+  select(id, age, trial, correct) |>
+  pivot_wider(names_from = trial,
+              values_from = correct)
+
+df.e3_fullmodel_nophy_boot <- full_join(df.e3_modelfull_and_data,
+                                    df.e3_modelnophy_and_data,
+                                    by = c("trial")) |>
+  select(trial, fullmodel = ratio.x, nophy = ratio.y)
+
+# Function to calculate the difference in correlations
+
+diff_cor_e3_fullvsnophy <- function(data, indices) {
+  boot_sample <- data[indices, ]
+
+  boot_means <- boot_sample |>
+    pivot_longer(cols = -c(id, age),
+               names_to = "trial",
+               values_to = "correct") |>
+    group_by(trial) |>
+    summarize(mean_correct = mean(correct, na.rm = TRUE))
+
+  joined_data <- left_join(boot_means,
+                           df.e3_fullmodel_nophy_boot,
+                           by = c("trial"))
+
+  cor_model1 <- cor(joined_data$mean_correct, joined_data$fullmodel)
+  cor_model2 <- cor(joined_data$mean_correct, joined_data$nophy)
+
+  return(cor_model1 - cor_model2)
+}
+
+boot_results_e3_fullvsnophy <- boot(
+  data = df.e3_childfc_boot_wide,
+  statistic = diff_cor_e3_fullvsnophy,
+  R = 1000
+)
+
+boot_results_e3_fullvsnophy
+
+boot.ci(boot_results_e3_fullvsnophy)
+
+```
+
+## Modeling (Experiment 4)
+
+Full model:
+
+```{r}
+
+df.e4_vr_summary <- df.e4_vr |> 
+  group_by(Friction_Level, Tower_Type) |> 
+  summarize(mean_diff = mean(Difficulty))
+
+df.e4_fullmodel_and_data <- full_join(df.e4_vr_summary, 
+                                      df.e4_model20)
+
+cor.test(df.e4_fullmodel_and_data$mean_KE_20, 
+         df.e4_fullmodel_and_data$mean_diff)
+
+```
+
+Model Ablations (no planning)
+
+```{r}
+
+df.e4_noplan_and_data <- full_join(df.e4_vr_summary, 
+                                      df.e4_model20_noplan)
+
+cor.test(df.e4_noplan_and_data$KE, 
+         df.e4_noplan_and_data$mean_diff)
+
+```
+
+Model Ablations (no physics)
+
+```{r}
+
+df.e4_nophy_and_data <- full_join(df.e4_vr_summary, 
+                                      df.e4_model20_nophy)
+
+cor.test(df.e4_nophy_and_data$mean_KE_20_nophy, 
+         df.e4_nophy_and_data$mean_diff)
+
+```
+
+
+Difference between full model and no physics model
+
+```{r}
+df.e4_vr_boot_wide <- df.e4_vr |>
+  select(id, Friction_Level, Tower_Type, Difficulty) %>%
+  pivot_wider(
+    id_cols = c(id, Friction_Level),
+    names_from = Tower_Type,
+    values_from = c(Difficulty)
+  )
+
+df.e4_fullmodel_nophy_data <- full_join(df.e4_fullmodel_and_data, df.e4_nophy_and_data, by = c("Friction_Level", "Tower_Type")) |>
+  select(Friction_Level, Tower_Type, fullmodel = mean_KE_20, nophy = mean_KE_20_nophy)
+
+# Function to calculate the difference in correlations
+diff_cor <- function(data, indices) {
+  boot_sample <- data[indices, ]
+
+  boot_means <- boot_sample |>
+    pivot_longer(cols = -c(id, Friction_Level),
+                 names_to = "Tower_Type",
+                 values_to = "Difficulty") |>
+    group_by(Tower_Type, Friction_Level) |>
+    summarize(mean_diff = mean(Difficulty, na.rm = TRUE))
+
+  joined_data <- left_join(boot_means,
+                           df.e4_fullmodel_nophy_data,
+                           by = c("Tower_Type", "Friction_Level"))
+
+  cor_model1 <- cor(joined_data$mean_diff, joined_data$fullmodel)
+  cor_model2 <- cor(joined_data$mean_diff, joined_data$nophy)
+
+  return(cor_model1 - cor_model2)
+}
+
+boot_results_e4_full_nophy <- boot(
+  data = df.e4_vr_boot_wide,
+  statistic = diff_cor,
+  R = 1000
+)
+
+print(boot_results_e4_full_nophy)
+
+boot.ci(boot_results_e4_full_nophy, type = "perc")
+
+```
+
+
+Difference between full model and no planning model
+
+```{r}
+df.e4_vr_boot_wide <- df.e4_vr |>
+  select(id, Friction_Level, Tower_Type, Difficulty) %>%
+  pivot_wider(
+    id_cols = c(id, Friction_Level),
+    names_from = Tower_Type,
+    values_from = c(Difficulty)
+  )
+
+df.e4_fullmodel_noplan_data <- full_join(df.e4_fullmodel_and_data, df.e4_noplan_and_data, by = c("Friction_Level", "Tower_Type")) |>
+  select(Friction_Level, Tower_Type, fullmodel = mean_KE_20, noplan = KE)
+
+# Function to calculate the difference in correlations
+diff_cor <- function(data, indices) {
+  boot_sample <- data[indices, ]
+
+  boot_means <- boot_sample |>
+    pivot_longer(cols = -c(id, Friction_Level),
+                 names_to = "Tower_Type",
+                 values_to = "Difficulty") |>
+    group_by(Tower_Type, Friction_Level) |>
+    summarize(mean_diff = mean(Difficulty, na.rm = TRUE))
+
+  joined_data <- left_join(boot_means,
+                           df.e4_fullmodel_noplan_data,
+                           by = c("Tower_Type", "Friction_Level"))
+
+  cor_model1 <- cor(joined_data$mean_diff, joined_data$fullmodel)
+  cor_model2 <- cor(joined_data$mean_diff, joined_data$noplan)
+
+  return(cor_model1 - cor_model2)
+}
+
+boot_results_e4_full_noplan <- boot(
+  data = df.e4_vr_boot_wide,
+  statistic = diff_cor,
+  R = 1000
+)
+
+print(boot_results_e4_full_noplan)
+
+boot.ci(boot_results_e4_full_noplan, type = "perc")
+
+```
+
+## SOM: In-Person Developmental
+
+Model:
+
+```{r}
+
+model_som_inpersondev <- glmer(correct ~ 1 + trial + age + question_type + trial:age + (1|id),
+                         family = "binomial",
+      data = df.som_inpersondev,
+      control = glmerControl(optimizer = "bobyqa",
+                             optCtrl = list(maxfun = 2e5)))
+
+model_som_inpersondev |> 
+  joint_tests()
+```
+
+```{r}
+#analyze age point of success
+
+som_inpersonchild_age_range <- seq(3.01, 5.44, by = .01)
+
+som_ip_predict <- ggpredict(model_som_inpersondev,
+              terms = c("age [som_inpersonchild_age_range]", "trial"),
+              type = "fe")
+
+df.som_ip_predict <- data.frame(age = som_ip_predict$x,
+           trial = som_ip_predict$group,
+           lowerCI = som_ip_predict$conf.low)
+
+df.som_ip_predict <- df.som_ip_predict |> 
+  group_by(trial) |> 
+  mutate(passed = ifelse(any(lowerCI > 0.50), "passed", "did not pass .5")) |> 
+  ungroup()
+
+df.som_ip_passedmin <- df.som_ip_predict %>%
+  filter(passed == "passed",
+         lowerCI > .5) %>%
+  group_by(trial) %>%
+  summarise(min_age = min(age))
+
+df.som_ip_nopass <- df.som_ip_predict |> 
+  filter(passed == "did not pass .5") |> 
+  group_by(trial) |> 
+  summarise(min_age = "did not pass .5")
+
+# Printing to table
+
+df.som_ip_predictions <- rbind(df.som_ip_passedmin, df.som_ip_nopass)
+
+options(max.print = nrow(df.som_ip_predictions))
+
+kable(df.som_ip_predictions,
+      format = "html", table.attr = "style = \"color: white;\"",
+      caption = "In-Person")
+```
+
+
+EXPLORATORY ANALYSIS: effect of question type on the same trials that showed these in Lookit?
+
+```{r}
+
+#first pattern trials
+df.som_inpersondev_patterntrials <- df.som_inpersondev |> 
+  filter(trial == "Pattern")
+
+t.test(correct ~ question_type,
+       data = df.som_inpersondev_patterntrials)
+
+#second number4 trials
+df.som_inpersondev_number4trials <- df.som_inpersondev |> 
+  filter(trial == "Number4")
+
+t.test(correct ~ question_type,
+       data = df.som_inpersondev_number4trials)
+
+#third agent2
+df.som_inpersondev_agent2trials <- df.som_inpersondev |> 
+  filter(trial == "Agent2")
+
+t.test(correct ~ question_type,
+       data = df.som_inpersondev_agent2trials)
+
+# Overall differences by question type
+
+df.som_inpersondev |> 
+  group_by(question_type, trial) |> 
+  summarize(mean_correct = mean(correct)) |> 
+  ungroup() |> 
+  pivot_wider(names_from = question_type,
+              values_from = mean_correct) |> 
+  mutate(diff_easyhard = harder - easier)
+
+```
+
+
+## SOM: Merged In-Person and Lookit
+
+Make Merged Dataset:
+
+```{r}
+
+df.e2b_childfc_formerge <- df.e2b_childfc |> 
+  mutate(dataset = "Lookit") |> 
+  select(id = id,
+         age,
+         gender,
+         question_type,
+         trial,
+         correct,
+         dataset)
+
+df.som_inpersondev_formerge <- df.som_inpersondev |> 
+  mutate(dataset = "In-Person") |> 
+  select(id,
+         age,
+         gender,
+         question_type,
+         trial,
+         correct,
+         dataset)
+
+df.sominperson_e2b_merged <- full_join(df.e2b_childfc_formerge,
+                                       df.som_inpersondev_formerge) |> 
+  filter(trial != "TwoPile_Castle")
+```
+
+
+Find Demographics of merged data:
+
+```{r}
+
+df.sominperson_e2b_merged |> 
+  distinct(id, .keep_all = TRUE) %>%
+  select(id, age, trial, correct) %>%
+  pivot_wider(names_from = trial, values_from = correct) |> 
+  pull(age) |> 
+  mean()
+
+df.sominperson_e2b_merged |> 
+  distinct(id, .keep_all = TRUE) %>%
+  select(id, age, trial, correct) %>%
+  pivot_wider(names_from = trial, values_from = correct) |> 
+  pull(age) |> 
+  sd()
+
+df.sominperson_e2b_merged |> 
+  distinct(id, .keep_all = TRUE) %>%
+  select(id, age, trial, correct) %>%
+  pivot_wider(names_from = trial, values_from = correct) |> 
+  pull(age) |> 
+  range()
+
+```
+
+Run analyses:
+
+```{r rows.print=25}
+
+#full model
+model_sominperson_e2b_merged <- glmer(correct ~ 1 + trial + age + question_type + trial:age +
+                           (1|id),
+                         family = "binomial",
+                         control = glmerControl(optimizer = "bobyqa",
+                                                optCtrl = list(maxfun = 2e5)),
+      data = df.sominperson_e2b_merged)
+
+model_sominperson_e2b_merged |> 
+  joint_tests()
+
+```
+
+```{r}
+
+# ggpredict across all age
+
+ggpredict(model = model_sominperson_e2b_merged,
+          type = "fe")
+
+#now age analysis
+
+sominperson_e2b_merged_predict <- ggpredict(model = model_sominperson_e2b_merged,
+          terms = c("age [e2bchild_age_range]", "trial"),
+          type = "fe")
+
+df.sominperson_e2b_merged_predict <- data.frame(age = sominperson_e2b_merged_predict$x,
+           trial = sominperson_e2b_merged_predict$group,
+           lowerCI = sominperson_e2b_merged_predict$conf.low)
+
+df.sominperson_e2b_merged_predict <- df.sominperson_e2b_merged_predict |> 
+  group_by(trial) |> 
+  mutate(passed = ifelse(any(lowerCI > 0.50), "passed", "did not pass .5")) |> 
+  ungroup()
+
+df.sominperson_e2b_merged_passedmin <- df.sominperson_e2b_merged_predict %>%
+  filter(passed == "passed",
+         lowerCI > .5) %>%
+  group_by(trial) %>%
+  summarise(min_age = min(age))
+
+df.sominperson_e2b_merged_nopass <- df.sominperson_e2b_merged_predict |> 
+  filter(passed == "did not pass .5") |> 
+  group_by(trial) |> 
+  summarise(min_age = "did not pass .5")
+
+df.sominperson_e2b_merged_agepredictions <- rbind(df.sominperson_e2b_merged_passedmin, df.sominperson_e2b_merged_nopass)
+
+# Print table
+
+kable(df.sominperson_e2b_merged_agepredictions,
+      format = "html", table.attr = "style = \"color: white;\"",
+      caption = "Merged")
+
+
+```
+
+## Exploratory: VR Time
+
+```{r}
+
+# Creating and ordering by verticality (higher is more vertical here)
+df.e4_vr <- df.e4_vr |> 
+    mutate(verticality = ifelse(Tower_Type == "5 Horizontal", 1,
+                ifelse(Tower_Type == "10 Horizontal", 1,
+                       ifelse(Tower_Type == "3x3", 3,
+                              ifelse(Tower_Type == "5 Vertical", 5,
+                                     ifelse(Tower_Type == "L-Shaped", 6,
+                                            ifelse(Tower_Type == "10 Vertical", 10, NA)))))))
+
+# LME main effect of verticality and friction on time and interaction
+lmer(Time ~ verticality*Friction_Level + (1|id), 
+     data = df.e4_vr) |> 
+  joint_tests()
+
+#correlations with Diff
+#first with time
+df.e4_vr_time_summary <- df.e4_vr |> 
+  group_by(Friction_Level, Tower_Type) |> 
+  summarize(mean_time = mean(Time, na.rm = T))
+
+#now join with existing diff summary
+df.e4_vr_time_diff_summary <- full_join(df.e4_vr_time_summary, 
+                                      df.e4_vr_summary)
+
+cor.test(df.e4_vr_time_diff_summary$mean_time, 
+         df.e4_vr_time_diff_summary$mean_diff)
+
+
+```
+Now make the plot:
+
+```{r}
+
+
+# Calculate means
+e4_vr_time_means <- df.e4_vr %>%
+  group_by(Tower_Type, 
+           Friction_Level) %>%
+  summarize(Mean_Time = mean(Time, 
+                                   na.rm = TRUE), 
+            .groups = 'drop')
+
+# Create a new data frame for segments that contains each pair of points to connect
+e4_vr_time_segments <- e4_vr_time_means %>%
+  group_by(Tower_Type) %>%
+  summarize(xstart = first(Friction_Level),
+            xend = last(Friction_Level),
+            ystart = first(Mean_Time),
+            yend = last(Mean_Time), .groups = 'drop')
+
+ggplot(df.e4_vr, aes(x = Friction_Level, 
+                    y = Time, 
+                    color = Friction_Level)) +
+  geom_jitter(height = 0, 
+              width = .3, 
+              alpha = .1, 
+              size = 3) +
+  geom_segment(data = e4_vr_time_segments, 
+               aes(x = xstart, 
+                   xend = xend, 
+                   y = ystart, 
+                   yend = yend),
+               linetype = "dashed", 
+               color = "black", 
+               alpha = .8) +
+  stat_summary(fun.data = "mean_cl_boot", 
+               geom = "pointrange", 
+               size = 1, 
+               width = 0.2,
+               linewidth = 1) +
+  facet_grid(~ Tower_Type, 
+             scales = "free_y", 
+             space = "free_x") +
+  labs(x = "Friction Level", 
+       y = "Time Estimates (Sec)") +
+  scale_color_manual(values = c("Low" = "hot pink", "High" = "lightblue")) +
+  theme_classic() +
+  theme(
+    text = element_text(size = 18), # General text size
+    axis.title = element_text(size = 22), # Axis titles
+    axis.text = element_text(size = 20), # Axis text
+    legend.position = "none"
+  )
+
+```
+## Exploratory: Tsimane' Children fisher exact test
+
+```{r}
+
+#just stability trial for now
+
+df.e3childfc |> 
+  filter(trial == "Stability") |> 
+  mutate(median_age = ifelse(age < median(age), "Younger", "Older"),
+         median_age = as.factor(median_age)) |> 
+  select(correct, median_age) |> 
+  #make two dimensional contingency table for fisher exact test, with median age as columns and correct/incorrect as rows
+  table() |> 
+  fisher.test()
+  
+
+```
+
+
+
+
+
+Build Time and Time Estimation
+
+```{r}
+# Segment data for "7_Number"
+segment_build_timebuild_7 <- df.e1_full_summary %>%
+  filter(trial == "7_Number") %>%
+  summarize(x_start = mean_time[easy_hard == "easy"],
+            y_start = mean_build[easy_hard == "easy"],
+            x_end = mean_time[easy_hard == "hard"],
+            y_end = mean_build[easy_hard == "hard"])
+
+# Segment data for "12_Number"
+segment_build_timebuild_17 <- df.e1_full_summary %>%
+  filter(trial == "17_InitNumber") %>%
+  summarize(x_start = mean_time[easy_hard == "easy"],
+            y_start = mean_build[easy_hard == "easy"],
+            x_end = mean_time[easy_hard == "hard"],
+            y_end = mean_build[easy_hard == "hard"])
+
+# Segment data for "34_Stability"
+segment_build_timebuild_18 <- df.e1_full_summary %>%
+  filter(trial == "18_Stability") %>%
+  summarize(x_start = mean_time[easy_hard == "easy"],
+            y_start = mean_build[easy_hard == "easy"],
+            x_end = mean_time[easy_hard == "hard"],
+            y_end = mean_build[easy_hard == "hard"])
+
+p_buildtime <- ggplot(data = df.e1_full_summary, aes(x = mean_time, y = mean_build)) +
+  geom_point(data = df.e1_full_summary %>% filter(trial != "7_Number" & trial != "17_InitNumber" & trial != "18_Stability"), color = "black", size = 1, alpha = .5) +
+  geom_smooth(method = "lm", color = "black", size = 2) +
+  geom_segment(data = segment_build_timebuild_7, aes(x = x_start, y = y_start, xend = x_end, yend = y_end), color = "#f67733", size = 1, alpha = .8, linetype = "dashed") +
+  geom_segment(data = segment_build_timebuild_17, aes(x = x_start, y = y_start, xend = x_end, yend = y_end), color = "#96BFE8", size = 1, alpha = .8, linetype = "dashed") +
+  geom_segment(data = segment_build_timebuild_18, aes(x = x_start, y = y_start, xend = x_end, yend = y_end), color = "#5AA551", size = 1, alpha = .8, linetype = "dashed") +
+  geom_point(data = df.e1_full_summary %>% filter(trial == "7_Number", easy_hard == "easy"), color = "#f78f56", size = 6, shape = 17) +
+  geom_point(data = df.e1_full_summary %>% filter(trial == "7_Number", easy_hard == "hard"), color = "#f46010", size = 8, shape = 18) +
+  geom_point(data = df.e1_full_summary %>% filter(trial == "17_InitNumber", easy_hard == "easy"), color = "#DCEAF7", size = 7) +
+  geom_point(data = df.e1_full_summary %>% filter(trial == "17_InitNumber", easy_hard == "hard"), color = "#4E95D9", size = 5, shape = 25, fill = "#4E95D9") +
+  geom_point(data = df.e1_full_summary %>% filter(trial == "18_Stability", easy_hard == "easy"), color = "#A8E480", size = 6, shape = 15) +
+  geom_point(data = df.e1_full_summary %>% filter(trial == "18_Stability", easy_hard == "hard"), color = "#0B6623", size = 4, shape = 4, stroke = 2) +
+  scale_y_continuous(limits = c(0, 80), breaks = c(0, 40, 80)) +
+  scale_x_continuous(limits = c(0, 80), breaks = c(0, 40, 80)) +
+  theme_classic() +
+  theme(
+    legend.position = "none",
+    axis.title = element_text(face = "bold",
+                              size = 20),
+    axis.text = element_text(size = 18),
+  ) +
+  labs(title = "",
+       x = "Mean Time Estimation (0-100)",
+       y = "Mean Build Time (s)")
+
+ggsave(here("figs", "plots_from_analyses", "TED_Fig1_TimeBuild.jpg"), plot = p_buildtime, width = 6, height = 4, units = "in")
+
+# Print the plot to view it in RStudio
+print(p_buildtime)
+
+```
+
+Diff and Time
+
+```{r}
+# Segment data for "7_Number"
+segment_build_difftime_7 <- df.e1_full_summary %>%
+  filter(trial == "7_Number") %>%
+  summarize(x_start = mean_time[easy_hard == "easy"],
+            y_start = mean_diff[easy_hard == "easy"],
+            x_end = mean_time[easy_hard == "hard"],
+            y_end = mean_diff[easy_hard == "hard"])
+
+# Segment data for "12_Number"
+segment_build_difftime_17 <- df.e1_full_summary %>%
+  filter(trial == "17_InitNumber") %>%
+  summarize(x_start = mean_time[easy_hard == "easy"],
+            y_start = mean_diff[easy_hard == "easy"],
+            x_end = mean_time[easy_hard == "hard"],
+            y_end = mean_diff[easy_hard == "hard"])
+
+# Segment data for "34_Stability"
+segment_build_difftime_18 <- df.e1_full_summary %>%
+  filter(trial == "18_Stability") %>%
+  summarize(x_start = mean_time[easy_hard == "easy"],
+            y_start = mean_diff[easy_hard == "easy"],
+            x_end = mean_time[easy_hard == "hard"],
+            y_end = mean_diff[easy_hard == "hard"])
+
+p_difftime <- ggplot(data = df.e1_full_summary, aes(x = mean_time, y = mean_diff)) +
+  geom_point(data = df.e1_full_summary %>% filter(trial != "7_Number" & trial != "17_InitNumber" & trial != "18_Stability"), color = "black", size = 1, alpha = .5) +
+  geom_smooth(method = "lm", color = "black", size = 2) +
+  geom_segment(data = segment_build_difftime_7, aes(x = x_start, y = y_start, xend = x_end, yend = y_end), color = "#f67733", size = 1, alpha = .8, linetype = "dashed") +
+  geom_segment(data = segment_build_difftime_17, aes(x = x_start, y = y_start, xend = x_end, yend = y_end), color = "#96BFE8", size = 1, alpha = .8, linetype = "dashed") +
+  geom_segment(data = segment_build_difftime_18, aes(x = x_start, y = y_start, xend = x_end, yend = y_end), color = "#5AA551", size = 1, alpha = .8, linetype = "dashed") +
+  geom_point(data = df.e1_full_summary %>% filter(trial == "7_Number", easy_hard == "easy"), color = "#f78f56", size = 6, shape = 17) +
+  geom_point(data = df.e1_full_summary %>% filter(trial == "7_Number", easy_hard == "hard"), color = "#f46010", size = 8, shape = 18) +
+  geom_point(data = df.e1_full_summary %>% filter(trial == "17_InitNumber", easy_hard == "easy"), color = "#DCEAF7", size = 7) +
+  geom_point(data = df.e1_full_summary %>% filter(trial == "17_InitNumber", easy_hard == "hard"), color = "#4E95D9", size = 5, shape = 25, fill = "#4E95D9") +
+  geom_point(data = df.e1_full_summary %>% filter(trial == "18_Stability", easy_hard == "easy"), color = "#A8E480", size = 6, shape = 15) +
+  geom_point(data = df.e1_full_summary %>% filter(trial == "18_Stability", easy_hard == "hard"), color = "#0B6623", size = 4, shape = 4, stroke = 2) +
+  scale_y_continuous(limits = c(0, 80), breaks = c(0, 40, 80)) +
+  scale_x_continuous(limits = c(0, 80), breaks = c(0, 40, 80)) +
+  theme_classic() +
+  theme(
+    legend.position = "none",
+    axis.title = element_text(face = "bold",
+                              size = 20),
+    axis.text = element_text(size = 18),
+    axis.title.y = element_text(size = 15)
+  ) +
+  labs(title = "",
+       x = "Mean Time Estimation (0-100)",
+       y = "Mean Difficulty Rating (0-100)")
+
+ggsave(here("figs", "plots_from_analyses", "TED_Fig1_DiffTime.jpg"), plot = p_difftime, width = 6, height = 4, units = "in")
+
+# Print the plot to view it in RStudio
+print(p_difftime)
+
+```
+
+# Figures and Tables
+
+## Figure 1: Experiment 1
+
+Build and Diff
+
+```{r}
+# Segment data for "7_Number"
+segment_build_diff_7 <- df.e1_full_summary %>%
+  filter(trial == "7_Number") %>%
+  summarize(x_start = mean_diff[easy_hard == "easy"],
+            y_start = mean_build[easy_hard == "easy"],
+            x_end = mean_diff[easy_hard == "hard"],
+            y_end = mean_build[easy_hard == "hard"])
+
+# Segment data for "12_Number"
+segment_build_diff_17 <- df.e1_full_summary %>%
+  filter(trial == "17_InitNumber") %>%
+  summarize(x_start = mean_diff[easy_hard == "easy"],
+            y_start = mean_build[easy_hard == "easy"],
+            x_end = mean_diff[easy_hard == "hard"],
+            y_end = mean_build[easy_hard == "hard"])
+
+# Segment data for "34_Stability"
+segment_build_diff_18 <- df.e1_full_summary %>%
+  filter(trial == "18_Stability") %>%
+  summarize(x_start = mean_diff[easy_hard == "easy"],
+            y_start = mean_build[easy_hard == "easy"],
+            x_end = mean_diff[easy_hard == "hard"],
+            y_end = mean_build[easy_hard == "hard"])
+
+
+p_builddiff <- NULL
+p_builddiff <- ggplot(data = df.e1_full_summary, aes(x = mean_diff, y = mean_build)) +
+  geom_point(data = df.e1_full_summary %>% filter(trial != "7_Number" & trial != "17_InitNumber" & trial != "18_Stability"), color = "black", size = 3, alpha = .5) +
+  geom_smooth(method = "lm", color = "black", size = 3) +
+  # Dashed lines
+  # geom_segment(data = segment_build_diff_7, aes(x = x_start, y = y_start, xend = x_end, yend = y_end), color = "#F5B357", size = 1, alpha = .8, linetype = "dashed") +
+  # geom_segment(data = segment_build_diff_17, aes(x = x_start, y = y_start, xend = x_end, yend = y_end), color = "#96BFE8", size = 1, alpha = .8, linetype = "dashed") +
+  # geom_segment(data = segment_build_diff_18, aes(x = x_start, y = y_start, xend = x_end, yend = y_end), color = "#5AA551", size = 1, alpha = .8, linetype = "dashed") +
+  # Triangle pairs (light and dark orange)
+  geom_point(data = df.e1_full_summary %>% filter(trial == "7_Number", easy_hard == "easy"), color = "#F5B357", size = 10, shape = 17) +
+  geom_point(data = df.e1_full_summary %>% filter(trial == "7_Number", easy_hard == "hard"), color = "#EC9C54", size = 10, shape = 25, fill = "#EC9C54") +
+  # Circle pairs (light and dark blue)
+  geom_point(data = df.e1_full_summary %>% filter(trial == "17_InitNumber", easy_hard == "easy"), color = "#96BFE8", size = 12, shape = 16) +
+  geom_point(data = df.e1_full_summary %>% filter(trial == "17_InitNumber", easy_hard == "hard"), color = "#4E95D9", size = 6.5, shape = 4, stroke = 4) +
+  # Square pairs (light and dark green)
+  geom_point(data = df.e1_full_summary %>% filter(trial == "18_Stability", easy_hard == "easy"), color = "#A8E480", size = 11, shape = 15) +
+  geom_point(data = df.e1_full_summary %>% filter(trial == "18_Stability", easy_hard == "hard"), color = "#0B6623", size = 10, shape = 23, fill = "#0B6623") +
+  scale_y_continuous(limits = c(0, 80), breaks = c(0, 40, 80)) +
+  scale_x_continuous(limits = c(0, 80), breaks = c(0, 40, 80)) +
+  theme_classic() +
+  theme(
+    text = element_text(family = "Helvetica Neue"),
+    legend.position = "none",
+    axis.title = element_text(face = "bold", size = 33, family = "Helvetica Neue"),
+    axis.text = element_text(size = 33, family = "Helvetica Neue"),
+    axis.ticks.length = unit(0.25, "cm"),  # Makes tick marks longer
+    axis.ticks = element_line(size = 1.5)   # Makes tick marks thicker
+  ) +
+  labs(title = "",
+       x = "Mean Difficulty Rating (0-100)",
+       y = "Mean Build Time (s)")
+
+# ggsave(here("figs", "plots", "TED_Fig1_BuildDiff.jpg"), plot = p_builddiff, width = 9.2, height = 7.2, units = "in")
+
+# Print the plot to view it in RStudio
+print(p_builddiff)
+```
+
+Build Time and Time Estimation
+
+```{r}
+# Segment data for "7_Number"
+segment_build_timebuild_7 <- df.e1_full_summary %>%
+  filter(trial == "7_Number") %>%
+  summarize(x_start = mean_time[easy_hard == "easy"],
+            y_start = mean_build[easy_hard == "easy"],
+            x_end = mean_time[easy_hard == "hard"],
+            y_end = mean_build[easy_hard == "hard"])
+
+# Segment data for "12_Number"
+segment_build_timebuild_17 <- df.e1_full_summary %>%
+  filter(trial == "17_InitNumber") %>%
+  summarize(x_start = mean_time[easy_hard == "easy"],
+            y_start = mean_build[easy_hard == "easy"],
+            x_end = mean_time[easy_hard == "hard"],
+            y_end = mean_build[easy_hard == "hard"])
+
+# Segment data for "34_Stability"
+segment_build_timebuild_18 <- df.e1_full_summary %>%
+  filter(trial == "18_Stability") %>%
+  summarize(x_start = mean_time[easy_hard == "easy"],
+            y_start = mean_build[easy_hard == "easy"],
+            x_end = mean_time[easy_hard == "hard"],
+            y_end = mean_build[easy_hard == "hard"])
+
+p_buildtime <- ggplot(data = df.e1_full_summary, aes(x = mean_time, y = mean_build)) +
+  geom_point(data = df.e1_full_summary %>% filter(trial != "7_Number" & trial != "17_InitNumber" & trial != "18_Stability"), color = "black", size = 3, alpha = .5) +
+  geom_smooth(method = "lm", color = "black", size = 3) +
+  # Triangle pairs (light and dark orange)
+  geom_point(data = df.e1_full_summary %>% filter(trial == "7_Number", easy_hard == "easy"), color = "#F5B357", size = 10, shape = 17) +
+  geom_point(data = df.e1_full_summary %>% filter(trial == "7_Number", easy_hard == "hard"), color = "#EC9C54", size = 10, shape = 25, fill = "#EC9C54") +
+  # Circle pairs (light and dark blue)
+  geom_point(data = df.e1_full_summary %>% filter(trial == "17_InitNumber", easy_hard == "easy"), color = "#96BFE8", size = 12, shape = 16) +
+  geom_point(data = df.e1_full_summary %>% filter(trial == "17_InitNumber", easy_hard == "hard"), color = "#4E95D9", size = 6.5, shape = 4, stroke = 4) +
+  # Square pairs (light and dark green)
+  geom_point(data = df.e1_full_summary %>% filter(trial == "18_Stability", easy_hard == "easy"), color = "#A8E480", size = 11, shape = 15) +
+  geom_point(data = df.e1_full_summary %>% filter(trial == "18_Stability", easy_hard == "hard"), color = "#0B6623", size = 10, shape = 23, fill = "#0B6623") +
+  scale_y_continuous(limits = c(0, 80), breaks = c(0, 40, 80)) +
+  scale_x_continuous(limits = c(0, 80), breaks = c(0, 40, 80)) +
+  theme_classic() +
+  theme(
+    text = element_text(family = "Helvetica Neue"),
+    legend.position = "none",
+    axis.title = element_text(face = "bold", size = 33, family = "Helvetica Neue"),
+    axis.text = element_text(size = 33, family = "Helvetica Neue"),
+    axis.ticks.length = unit(0.25, "cm"),
+    axis.ticks = element_line(size = 1.5)
+  ) +
+  labs(title = "",
+       x = "Mean Time Estimation (0-100)",
+       y = "Mean Build Time (s)")
+
+# ggsave(here("figs", "plots", "TED_Fig1_TimeBuild.jpg"), plot = p_buildtime, width = 9.2, height = 7.2, units = "in")
+
+# Print the plot to view it in RStudio
+print(p_buildtime)
+
+```
+
+Diff and Time
+
+```{r}
+# Segment data for "7_Number"
+segment_build_difftime_7 <- df.e1_full_summary %>%
+  filter(trial == "7_Number") %>%
+  summarize(x_start = mean_time[easy_hard == "easy"],
+            y_start = mean_diff[easy_hard == "easy"],
+            x_end = mean_time[easy_hard == "hard"],
+            y_end = mean_diff[easy_hard == "hard"])
+
+# Segment data for "12_Number"
+segment_build_difftime_17 <- df.e1_full_summary %>%
+  filter(trial == "17_InitNumber") %>%
+  summarize(x_start = mean_time[easy_hard == "easy"],
+            y_start = mean_diff[easy_hard == "easy"],
+            x_end = mean_time[easy_hard == "hard"],
+            y_end = mean_diff[easy_hard == "hard"])
+
+# Segment data for "34_Stability"
+segment_build_difftime_18 <- df.e1_full_summary %>%
+  filter(trial == "18_Stability") %>%
+  summarize(x_start = mean_time[easy_hard == "easy"],
+            y_start = mean_diff[easy_hard == "easy"],
+            x_end = mean_time[easy_hard == "hard"],
+            y_end = mean_diff[easy_hard == "hard"])
+
+p_difftime <- ggplot(data = df.e1_full_summary, aes(x = mean_time, y = mean_diff)) +
+  geom_point(data = df.e1_full_summary %>% filter(trial != "7_Number" & trial != "17_InitNumber" & trial != "18_Stability"), color = "black", size = 3, alpha = .5) +
+  geom_smooth(method = "lm", color = "black", size = 3) +
+  # Triangle pairs (light and dark orange)
+  geom_point(data = df.e1_full_summary %>% filter(trial == "7_Number", easy_hard == "easy"), color = "#F5B357", size = 10, shape = 17) +
+  geom_point(data = df.e1_full_summary %>% filter(trial == "7_Number", easy_hard == "hard"), color = "#EC9C54", size = 10, shape = 25, fill = "#EC9C54") +
+  # Circle pairs (light and dark blue)
+  geom_point(data = df.e1_full_summary %>% filter(trial == "17_InitNumber", easy_hard == "easy"), color = "#96BFE8", size = 12, shape = 16) +
+  geom_point(data = df.e1_full_summary %>% filter(trial == "17_InitNumber", easy_hard == "hard"), color = "#4E95D9", size = 6.5, shape = 4, stroke = 4) +
+  # Square pairs (light and dark green)
+  geom_point(data = df.e1_full_summary %>% filter(trial == "18_Stability", easy_hard == "easy"), color = "#A8E480", size = 11, shape = 15) +
+  geom_point(data = df.e1_full_summary %>% filter(trial == "18_Stability", easy_hard == "hard"), color = "#0B6623", size = 10, shape = 23, fill = "#0B6623") +
+  scale_y_continuous(limits = c(0, 80), breaks = c(0, 40, 80)) +
+  scale_x_continuous(limits = c(0, 80), breaks = c(0, 40, 80)) +
+  theme_classic() +
+  theme(
+    text = element_text(family = "Helvetica Neue"),
+    legend.position = "none",
+    axis.title = element_text(face = "bold", size = 33, family = "Helvetica Neue"),
+    axis.text = element_text(size = 33, family = "Helvetica Neue"),
+    axis.ticks.length = unit(0.25, "cm"),
+    axis.ticks = element_line(size = 1.5)
+  ) +
+  labs(title = "",
+       x = "Mean Time Estimation (0-100)",
+       y = "Mean Difficulty Rating (0-100)")
+
+# ggsave(here("figs", "plots", "TED_Fig1_DiffTime.jpg"), plot = p_difftime, width = 9.2, height = 7.2, units = "in")
+
+# Print the plot to view it in RStudio
+print(p_difftime)
+
+```
+
+
+## Figure 2: The big plot
+
+In order to make Fig 2, combine summary dataframes of means and bootstrapped CI's:
+
+```{r}
+
+df.e2aadultfc_summary <- df.e2adultfc_all_long |> 
+  group_by(trial) |> 
+  multi_boot_standard(col = "correct") |> 
+  mutate(dataset = "US Adults") |> 
+  #get rid of trial that was left out of Tsimane and Lookit
+  filter(trial != "TwoPile_Castle")
+
+df.e2bchildfc_summary <- df.e2b_childfc |> 
+  group_by(trial) |> 
+  multi_boot_standard(col = "correct") |> 
+  mutate(dataset = "US Children") |> 
+  filter(!is.na(trial))
+
+df.e3childfc_summary <- df.e3childfc |> 
+  select(correct,
+         trial) |> 
+  group_by(trial) |> 
+  multi_boot_standard(col = "correct") |> 
+  mutate(dataset = "Tsimane' Children")
+
+df.e2a_2b_3_summary <- full_join(df.e2aadultfc_summary, 
+          full_join(df.e2bchildfc_summary, df.e3childfc_summary)) |> 
+  mutate(dataset = as.factor(dataset))
+
+```
+
+Now plot it:
+
+```{r}
+
+# Custom color palette
+custom_palette <- c(
+  "US Adults" = "white",
+  "US Children" = "black",
+  "Tsimane' Children" = "gray30"
+)
+
+p.figure2_data_noinperson <- ggplot(df.e2a_2b_3_summary, aes(x = dataset, 
+                                                   y = mean, 
+                                                   fill = dataset)) +
+  geom_bar(stat = "identity", 
+           position = position_dodge(width = 0.9),
+           color = "black",
+           width = .5,
+           size = 1) +
+  geom_errorbar(aes(ymin = ci_lower, 
+                    ymax = ci_upper), 
+                position = position_dodge(width = 0.9), 
+                width = 0.15,
+                size = 1.4) +
+  geom_hline(yintercept = .50,
+             linetype = "dashed",
+             alpha = .5) +
+  facet_wrap(~ factor(trial, c("Number1", 
+                                "Number2", 
+                                "Number3", 
+                                "Number4",
+                                "Stability",
+                                "Number&Stability",
+                                "Process1",
+                                "Process2",
+                                "Pattern",
+                                "Probability",
+                                "Agent1",
+                                "Agent2",
+                                "Agent3")), 
+             scales = "free_x",
+             nrow = 3) +
+  scale_fill_manual(values = custom_palette, name = "Dataset") +
+  scale_y_continuous(breaks = c(0, 0.5, 1), labels = scales::percent_format(accuracy = 1)) +
+  labs(title = "", 
+       x = "", 
+       y = "Percentage Correct") +
+  theme_classic() +
+  theme(
+    text = element_text(family = "Helvetica Neue"),
+    axis.text.x = element_blank(),
+    axis.title.y = element_text(face = "bold", size = 48, family = "Helvetica Neue"),
+    axis.text.y = element_text(size = 46, family = "Helvetica Neue"),
+    legend.text = element_text(size = 30, family = "Helvetica Neue"),
+    legend.title = element_text(face = "bold", size = 32, family = "Helvetica Neue"),
+    strip.text = element_text(size = 24, family = "Helvetica Neue"),
+    panel.spacing = unit(3,"lines")
+  )
+
+
+# Save the plot
+# ggsave(here("figs/figure2_data_noinperson.jpg"), width = 32, height = 14, p.figure2_data_noinperson, dpi = 300)
+
+# Print the plot to view it in RStudio
+print(p.figure2_data_noinperson)
+```
+
+## Figure 3: Lookit Age Points
+
+```{r}
+
+df.e2bchildagepredictions <- df.e2bchildagepredictions |> 
+  mutate(min_age = case_when(e2b_min_age == "did not pass .5" ~ NA,
+                             .default = as.numeric(e2b_min_age)))
+
+e2bchildfc_ageanalysis <- e2bchildfc_ageanalysis |> 
+  rename(trial = group)
+
+e2bchildfc_predict_age <- full_join(df.e2bchildagepredictions, e2bchildfc_ageanalysis, by = "trial") |> 
+  mutate(age = x)
+
+# Create a data frame for unique min_age values and their positions
+unique_min_age_expt2b <- e2bchildfc_predict_age %>%
+  dplyr::select(trial, e2b_min_age) %>%
+  dplyr::distinct() %>%
+  mutate(text_label = case_when(
+    is.na(e2b_min_age) ~ "N/A",
+    e2b_min_age == "did not pass .5" ~ "N/A",
+    TRUE ~ as.character(e2b_min_age)
+  ))
+
+p.figure3 <- ggplot(e2bchildfc_predict_age, aes(x = age, y = predicted)) +
+  geom_line(color = "gray30", size = 2.25) +
+  geom_ribbon(aes(ymin = conf.low, ymax = conf.high), alpha = .2, fill = "gray30") +
+  geom_vline(aes(xintercept = e2b_min_age), alpha = .2, color = "black", size = 3) +
+  geom_hline(yintercept = .5, linetype = "dashed", alpha = .35) +
+  geom_text(data = unique_min_age_expt2b,
+            aes(x = Inf, y = -Inf, label = text_label),
+            hjust = 1.2, vjust = -2, size = 12) +
+  facet_wrap(~ factor(trial, c("Number1",
+                               "Number2",
+                               "Number3",
+                               "Number4",
+                               "Stability",
+                               "Number&Stability",
+                               "Process1",
+                               "Process2",
+                               "Pattern",
+                               "Probability",
+                               "Agent1",
+                               "Agent2",
+                               "Agent3")),
+             scales = "free_x",
+             nrow = 3) +
+  geom_jitter(data = df.e2b_childfc,
+              aes(x = age, y = correct),
+              width = 0,
+              height = .05,
+              alpha = .05,
+              size = 5) +
+  theme_classic(base_size = 14) +
+  theme(
+        strip.text.x = element_text(size = 36, family = "Helvetica Neue"),
+        axis.text.x = element_text(size = 28, family = "Helvetica Neue"),
+        axis.title.x = element_text(face = "bold", size = 45, family = "Helvetica Neue"),
+        axis.text.y = element_text(size = 28, family = "Helvetica Neue"),
+        legend.text = element_text(size = 30, family = "Helvetica Neue"),
+        axis.title.y = element_text(face = "bold", size = 50, family = "Helvetica Neue")) +
+  scale_y_continuous(breaks = c(0, 0.5, 1), labels = scales::percent_format(accuracy = 1)) +
+  labs(x = "Age (years)",
+       y = "Percentage Correct")
+
+
+# Print the plot to view it in RStudio
+print(p.figure3)
+
+# Save the plot to a file with specific dimensions
+# ggsave(here("figs", "plots", "TED_Figure3.png"),
+#        plot = p.figure3, 
+#        width = 24, 
+#        height = 14, 
+#        dpi = 300)
+```
+
+## Figure 4: VR Data
+
+First, the empirical data:
+
+```{r}
+
+# correctly reorder the Tower_Type factor
+df.e4_vr$Tower_Type <- factor(df.e4_vr$Tower_Type, 
+                              levels = c("5 Horizontal", "10 Horizontal", "3x3", 
+                                         "5 Vertical", "L-Shaped", "10 Vertical"))
+
+# recalculate means with the new order
+e4_vr_means <- df.e4_vr %>%
+  group_by(Tower_Type, Friction_Level) %>%
+  summarize(Mean_Difficulty = mean(Difficulty, na.rm = TRUE), 
+            .groups = 'drop')
+
+e4_vr_segments <- e4_vr_means %>%
+  group_by(Tower_Type) %>%
+  summarize(xstart = first(Friction_Level),
+            xend = last(Friction_Level),
+            ystart = first(Mean_Difficulty),
+            yend = last(Mean_Difficulty), 
+            .groups = 'drop')
+
+# update the plot with the new order
+p_e4_vrdata <- ggplot(df.e4_vr, aes(x = Friction_Level, 
+                    y = Difficulty, 
+                    color = Tower_Type)) +  
+  geom_jitter(height = 0, 
+              width = .1, 
+              alpha = .15, 
+              size = 3) +
+  geom_segment(data = e4_vr_segments, 
+               aes(x = xstart, 
+                   xend = xend, 
+                   y = ystart, 
+                   yend = yend),
+               linetype = "dashed", 
+               color = "black", 
+               alpha = .8,
+               linewidth = 1.5) +
+  stat_summary(fun.data = "mean_cl_boot", 
+               geom = "pointrange", 
+               size = 1.25, 
+               linewidth = 2) +
+  facet_grid(~ Tower_Type, 
+             scales = "free_y", 
+             space = "free_x") +
+  scale_x_discrete(expand = c(0.4, 0.4)) +
+  labs(x = "Friction Level", 
+       y = "Difficulty Rating \n(1-10)") +
+  scale_color_manual(values = c("5 Horizontal" = "#8DE18F",
+                               "10 Horizontal" = "#8DE18F",
+                               "3x3" = "#52D356",
+                               "5 Vertical" = "#2CAF30",
+                               "L-Shaped" = "#1F7B22",
+                               "10 Vertical" = "#124713")) +
+  theme_classic() +
+  theme(
+    text = element_text(size = 18, family = "Helvetica Neue"),
+    axis.title = element_text(face = "bold", size = 26, family = "Helvetica Neue"),
+    axis.title.x = element_text(margin = margin(t = 20)), # Adds 20 points of space above the x-axis label
+    axis.text = element_text(size = 28, family = "Helvetica Neue"),
+    strip.text = element_blank(),
+    legend.position = "none")
+
+# ggsave(here("figs/e4_vrdata.jpg"), width = 20, height = 4.45, p_e4_vrdata, dpi = 300)
+
+# Print the plot to view it in RStudio
+print(p_e4_vrdata)
+
+```
+
+Now the model:
+
+```{r}
+
+# first, reorder the Tower_Type factor in df.e4_model20
+df.e4_model20$Tower_Type <- factor(df.e4_model20$Tower_Type, 
+                                   levels = c("5 Horizontal", "10 Horizontal", "3x3", 
+                                              "5 Vertical", "L-Shaped", "10 Vertical"))
+
+# recalculate segments with the new order
+segments_vrdata_model20 <- df.e4_model20 %>%
+  group_by(Tower_Type) %>%
+  summarize(xstart = first(Friction_Level),
+            xend = last(Friction_Level),
+            ystart = first(mean_KE_20),
+            yend = last(mean_KE_20), .groups = 'drop')
+
+p_e4_model20 <- ggplot(df.e4_model20, aes(x = Friction_Level, 
+                       y = mean_KE_20, 
+                       color = Tower_Type)) +  # Changed to Tower_Type
+  geom_segment(data = segments_vrdata_model20, 
+               aes(x = xstart, 
+                   xend = xend, 
+                   y = ystart, 
+                   yend = yend),
+               linetype = "dashed", 
+               color = "black",
+               alpha = .8,
+               linewidth = 1.5) +
+  stat_summary(fun.data = "mean_cl_boot", 
+               geom = "pointrange", 
+               size = 1, 
+               linewidth = 1) +
+  facet_grid(~ Tower_Type, 
+             scales = "free_y", 
+             space = "free_x") +
+  labs(x = "Friction Level", 
+       y = "Full Model:\nInferred Cost",
+       color = "Tower Type") +
+  scale_color_manual(values = c("5 Horizontal" = "#8DE18F",
+                               "10 Horizontal" = "#8DE18F",
+                               "3x3" = "#52D356",
+                               "5 Vertical" = "#2CAF30",
+                               "L-Shaped" = "#1F7B22",
+                               "10 Vertical" = "#124713")) +
+  theme_classic() +
+  theme(
+    text = element_text(size = 18, family = "Helvetica Neue"),
+    axis.title = element_text(face = "bold", size = 26, family = "Helvetica Neue"),
+    axis.text = element_text(face = "bold", size = 28, family = "Helvetica Neue"),
+    strip.text = element_blank(),
+    legend.position = "none")
+
+# ggsave(here("figs/e4_model20.jpg"), width = 20, height = 4.45, p_e4_model20, dpi = 300)
+
+# Print the plot to view it in RStudio
+print(p_e4_model20)
+```
+
+
+## SOM Plot: In-Person Data Collection Age Point Plot
+
+```{r}
+df.som_ip_predictions <- df.som_ip_predictions |>
+  mutate(min_age = case_when(min_age == "did not pass .5" ~ NA,
+                             .default = as.numeric(min_age)))
+
+df.som_ip_predict_full <- data.frame(som_ip_predict) |> 
+  rename(trial = group)
+
+df.som_ip_predictions_age <- full_join(df.som_ip_predictions, df.som_ip_predict_full, by = "trial") |>
+  mutate(age = x)
+
+unique_min_age_inpersondev <- df.som_ip_predictions_age %>%
+  dplyr::select(trial, min_age) %>%
+  dplyr::distinct() %>%
+  mutate(text_label = case_when(
+    is.na(min_age) ~ "N/A",
+    min_age == "did not pass .5" ~ "N/A",
+    TRUE ~ as.character(min_age)
+  ))
+
+#trial_percentages <- df.som_inpersondev %>%
+  # group_by(question_type) %>%
+  # summarise(
+  #   percent_correct = mean(correct, na.rm = TRUE) * 100
+  # ) %>%
+  # arrange(desc(percent_correct))
+
+# Plot the graph
+p.inperson_agetrends <- ggplot(df.som_ip_predictions_age, aes(x = age, y = predicted)) +
+  geom_line(color = "gray30", size = 2.25) +
+  geom_ribbon(aes(ymin = conf.low, ymax = conf.high), alpha = .2, fill = "gray30") +
+  geom_vline(aes(xintercept = min_age), alpha = .2, color = "black", size = 3) +
+  geom_hline(yintercept = .5, linetype = "dashed", alpha = .35) +
+  geom_text(data = unique_min_age_inpersondev, 
+          aes(x = Inf, y = -Inf, label = text_label),
+          hjust = 1.2, 
+          vjust = -2,
+          size = 12) +
+  geom_jitter(data = df.som_inpersondev,
+              aes(x = age, y = correct),
+              alpha = .05,  # Changed from .2 to .05
+              width = 0, height = .05,
+              size = 5) +
+  facet_wrap(~ factor(trial, c("Number1", 
+                    "Number2", 
+                    "Number3", 
+                    "Number4",
+                    "Stability",
+                    "Number&Stability",
+                    "Process1",
+                    "Process2",
+                    "Pattern",
+                    "Probability",
+                    "Agent1",
+                    "Agent2",
+                    "Agent3",
+                    "TwoPile_Castle")), 
+             scales = "free_x",
+             nrow = 3) +
+  scale_x_continuous(limits = c(3, 6),
+                     breaks = c(3, 4, 5, 6)) +
+  scale_y_continuous(breaks = c(0, 0.5, 1), labels = scales::percent_format(accuracy = 1)) +  # Added percentage formatting
+  theme_classic(base_size = 14) +  # Added base_size parameter
+  theme(
+      strip.text.x = element_text(size = 36, family = "Helvetica Neue"),
+      strip.background = element_rect(fill = "white"),  # Add this
+      strip.placement = "outside",                      # Add this
+      axis.text.x = element_text(size = 28, family = "Helvetica Neue"),
+      axis.title.x = element_text(face = "bold", size = 45, family = "Helvetica Neue"),
+      axis.text.y = element_text(size = 28, family = "Helvetica Neue"),
+      legend.text = element_text(size = 30, family = "Helvetica Neue"),
+      axis.title.y = element_text(face = "bold", size = 50, family = "Helvetica Neue")) +
+  labs(x = "Age (years)",
+       y = "Percentage Correct")
+
+
+# ggsave(here("figs/SOM_InPersonDev_AgeTrends.png"), width = 24, height = 14, p.inperson_agetrends, dpi = 300)
+
+# Print the plot to view it in RStudio
+print(p.inperson_agetrends)
+
+```
+
+
+
+## SOM Table: Model predictions & Confidence Intervals
+```{r}
+
+# Define trial order
+table_trial_order <- c("Number1", "Number2", "Number3", "Number4", "Stability", "TwoPile_Castle",
+                       "Number&Stability", "Process1", "Process2", "Pattern", "Probability",
+                       "Agent1", "Agent2", "Agent3")
+
+
+# Create a function to scrape predictions
+extract_table_values <- function(prediction, table_trial_order) {
+  if ("trial" %in% names(prediction)) {
+    df <- prediction$trial
+  } else {
+    df <- as.data.frame(prediction)
+  }
+  
+  df <- df %>%
+    mutate(trial = as.character(x)) %>%
+    mutate(Est. = round(predicted, 3),
+           LCI = round(conf.low, 3),
+           UCI = round(conf.high, 3)) %>%
+    select(trial, Est., LCI, UCI)
+  
+  full_join(data.frame(trial = table_trial_order), df, by = "trial") %>%
+    mutate(across(c(Est., LCI, UCI), ~ replace_na(as.character(.), "-"))) %>%
+    arrange(match(trial, table_trial_order))
+}
+
+
+# Get the predictions from each experiment
+exp2a_values <- extract_table_values(ggpredict(model_e2adultfc, type = "fe")$trial, table_trial_order)
+exp2b_values <- extract_table_values(ggpredict(model_e2bchildfc, terms = "trial"), table_trial_order)
+exp3_values <- extract_table_values(ggpredict(model_e3childfc, terms = "trial"), table_trial_order)
+in_person_dev_values <- extract_table_values(ggpredict(model_som_inpersondev, terms = "trial"), table_trial_order)
+merged_values <- extract_table_values(ggpredict(model_sominperson_e2b_merged, terms = "trial"), table_trial_order)
+
+
+# Create a data frame of the predictions
+table_predictions_df <- bind_cols(
+  trial = table_trial_order,
+  exp2a_values %>% select(Est., LCI, UCI),
+  exp2b_values %>% select(Est., LCI, UCI),
+  exp3_values %>% select(Est., LCI, UCI),
+  in_person_dev_values %>% select(Est., LCI, UCI),
+  merged_values %>% select(Est., LCI, UCI)
+)
+
+# Create the LaTeX table
+create_latex_table <- function(df) {
+  # Table header
+  latex <- "\\begin{table}[p]\n\\centering\n\\setlength{\\tabcolsep}{3pt}\n\\footnotesize\n"
+  latex <- paste0(latex, "\\caption{Model predictions and 95\\% confidence intervals for Experiments 2a, 2b, 3, In-Person Dev, and Merged. LCI = Lower Confidence Interval; UCI = Upper Confidence Interval.}\n")
+  latex <- paste0(latex, "\\begin{tabular}{l|rrr|rrr|rrr|rrr|rrr}\n\\hline\n")
+  
+  # Column headers
+  latex <- paste0(latex, "& \\multicolumn{3}{c|}{Exp. 2a} & \\multicolumn{3}{c|}{Exp. 2b} & \\multicolumn{3}{c|}{Exp. 3} & \\multicolumn{3}{c|}{In-Person Dev} & \\multicolumn{3}{c}{Merged} \\\\\n")
+  latex <- paste0(latex, "Trial & Est. & LCI & UCI & Est. & LCI & UCI & Est. & LCI & UCI & Est. & LCI & UCI & Est. & LCI & UCI \\\\\n")
+  latex <- paste0(latex, "\\hline\n")
+  
+  # Table content
+  for(i in 1:nrow(df)) {
+    row <- df[i,]
+    latex <- paste0(latex, 
+                    sprintf("%s & %s & %s & %s & %s & %s & %s & %s & %s & %s & %s & %s & %s & %s & %s & %s \\\\\n",
+                            row$trial,
+                            row[[2]], row[[3]], row[[4]],
+                            row[[5]], row[[6]], row[[7]],
+                            row[[8]], row[[9]], row[[10]],
+                            row[[11]], row[[12]], row[[13]],
+                            row[[14]], row[[15]], row[[16]]))
+  }
+  
+  
+  # Table footer
+  latex <- paste0(latex, "\\hline\n\\end{tabular}\n\\end{table}")
+  
+  return(latex)
+}
+
+# Generate LaTeX table
+latex_table <- create_latex_table(table_predictions_df)
+
+# Print the code
+cat(latex_table)
+
+```
+
+
+## SOM Exp 4 Plot
+
+### First make the ablated no planning VR model
+
+```{r}
+
+# Calculate means
+e4_vr_noplanning_segments <- df.e4_model20_noplan %>%
+  group_by(Tower_Type) %>%
+  summarize(xstart = first(Friction_Level),
+            xend = last(Friction_Level),
+            ystart = first(KE),
+            yend = last(KE), .groups = 'drop')
+
+p.e4_noplanning <- ggplot(df.e4_model20_noplan, aes(x = Friction_Level, 
+                       y = KE, 
+                       color = Tower_Type)) +  # Changed to color by Tower_Type instead of Friction_Level
+  geom_segment(data = e4_vr_noplanning_segments,
+               aes(x = xstart, 
+                   xend = xend, 
+                   y = ystart, 
+                   yend = yend),
+               linetype = "dashed", 
+               color = "black",
+               linewidth = 1.5,
+               alpha = .8) +
+  stat_summary(fun.data = "mean_cl_boot", 
+               geom = "pointrange", 
+               size = 1.25, 
+               linewidth = 1) +
+  facet_grid(~ Tower_Type, 
+             scales = "free_y", 
+             space = "free_x") +
+  labs(x = "Friction Level", 
+       y = "No Planning Model:\nInferred Cost") +
+  scale_color_manual(values = c("5 Horizontal" = "#8DE18F",
+                               "10 Horizontal" = "#8DE18F",
+                               "3x3" = "#52D356",
+                               "5 Vertical" = "#2CAF30",
+                               "L-Shaped" = "#1F7B22",
+                               "10 Vertical" = "#124713")) +
+  scale_y_continuous(limits = c(0, 1)) +
+  theme_classic() +
+  theme(
+    text = element_text(size = 18, family = "Helvetica Neue"),
+    axis.title = element_text(face = "bold", size = 26, family = "Helvetica Neue"),
+    axis.title.x = element_text(margin = margin(t = 20)), # Adds 20 points of space above the x-axis label
+    axis.text = element_text(size = 28, family = "Helvetica Neue"),
+    strip.text = element_blank(),
+    legend.position = "none")
+
+# ggsave(here("figs/e4_noplanning.png"), 
+#        width = 20,
+#        height = 4.45,
+#        p.e4_noplanning, 
+#        dpi = 300)
+
+print(p.e4_noplanning)
+
+```
+
+### Now the ablated no physics VR model
+
+```{r}
+
+# First create the segments data frame
+e4_vr_nophy_segments <- df.e4_model20_nophy %>%
+  group_by(Tower_Type) %>%
+  summarize(xstart = last(Friction_Level),
+            xend = first(Friction_Level),
+            ystart = first(mean_KE_20_nophy),
+            yend = last(mean_KE_20_nophy),
+            .groups = 'drop')
+
+# Then create the plot
+p.e4_nophy <- ggplot(df.e4_model20_nophy, aes(x = Friction_Level, 
+                       y = mean_KE_20_nophy, 
+                       color = Tower_Type)) +
+  geom_segment(data = e4_vr_nophy_segments,
+               aes(x = xstart, 
+                   xend = xend, 
+                   y = ystart, 
+                   yend = yend),
+               linetype = "dashed", 
+               color = "black",
+               alpha = .8,
+               linewidth = 1.5) +
+  stat_summary(fun.data = "mean_cl_boot", 
+               geom = "pointrange", 
+               size = 1.25, 
+               width = 1) +
+  facet_grid(~ Tower_Type, 
+             scales = "free_y", 
+             space = "free_x") +
+  labs(x = "Friction Level", 
+       y = "No Physics Model:\nInferred Cost") +
+  scale_color_manual(values = c("5 Horizontal" = "#8DE18F",
+                               "10 Horizontal" = "#8DE18F",
+                               "3x3" = "#52D356",
+                               "5 Vertical" = "#2CAF30",
+                               "L-Shaped" = "#1F7B22",
+                               "10 Vertical" = "#124713")) +
+  theme_classic() +
+  theme(
+    text = element_text(size = 18, family = "Helvetica Neue"),
+    axis.title = element_text(face = "bold", size = 26, family = "Helvetica Neue"),
+    axis.title.x = element_text(face = "bold", size = 40, margin = margin(t = 50), family = "Helvetica Neue"),
+    axis.text = element_text(size = 28, family = "Helvetica Neue"),
+    strip.text = element_blank(),
+    legend.position = "none")
+
+# ggsave(here("figs/e4_model20_nophy.png"), 
+#        width = 20, 
+#        height = 5.14, 
+#        p.e4_nophy, 
+#        dpi = 300)
+
+```
+
+
+
+
+
+### Now, combine all into one plot
+```{r}
+
+# For human data, calculate means first
+df_vr_means <- df.e4_vr %>%
+  group_by(Tower_Type, Friction_Level) %>%
+  summarize(value = mean(Difficulty, na.rm = TRUE), .groups = 'drop') %>%
+  mutate(z_value = scale(value)[,1],
+         source = "Human Data")
+
+# For model data, use the existing means but z-score them
+df_model20_z <- df.e4_model20 %>%
+  mutate(z_value = scale(mean_KE_20)[,1],
+         source = "Full Model")
+
+df_noplan_z <- df.e4_model20_noplan %>%
+  mutate(z_value = scale(KE)[,1],
+         source = "No Planning")
+
+df_nophy_z <- df.e4_model20_nophy %>%
+  mutate(z_value = scale(mean_KE_20_nophy)[,1],
+         source = "No Physics")
+
+# Combine all data
+combined_df <- bind_rows(
+  df_vr_means %>% select(Tower_Type, Friction_Level, z_value, source),
+  df_model20_z %>% select(Tower_Type, Friction_Level, z_value, source),
+  df_noplan_z %>% select(Tower_Type, Friction_Level, z_value, source),
+  df_nophy_z %>% select(Tower_Type, Friction_Level, z_value, source)
+)
+
+# Create segments data
+combined_segments <- combined_df %>%
+  group_by(Tower_Type, source) %>%
+  summarize(xstart = first(Friction_Level),
+            xend = last(Friction_Level),
+            ystart = first(z_value),
+            yend = last(z_value),
+            .groups = 'drop')
+
+# Create the plot
+p_combined <- ggplot(combined_df, aes(x = Friction_Level, 
+                                     y = z_value, 
+                                     shape = source,
+                                     color = Tower_Type)) +
+  geom_segment(data = combined_segments,
+               aes(x = xstart, 
+                   xend = xend,
+                   y = ystart,
+                   yend = yend,
+                   group = source),
+               linetype = "dashed",
+               color = "black",
+               alpha = 0.8,
+               linewidth = 1) +
+  stat_summary(fun.data = "mean_cl_boot",
+               geom = "pointrange",
+               size = 2,
+               position = position_dodge(width = 0.2)) +
+  facet_grid(~ Tower_Type,
+             scales = "free_y",
+             space = "free_x") +
+  scale_shape_manual(values = c("Human Data" = 16,    # solid circle
+                               "Full Model" = 17,      # solid triangle
+                               "No Planning" = 15,     # solid square
+                               "No Physics" = 18)) +   # solid diamond
+  scale_color_manual(values = c("5 Horizontal" = "#8DE18F",
+                               "10 Horizontal" = "#8DE18F",
+                               "3x3" = "#52D356",
+                               "5 Vertical" = "#2CAF30",
+                               "L-Shaped" = "#1F7B22",
+                               "10 Vertical" = "#124713")) +
+  scale_x_discrete(expand = c(0.4, 0.4)) +
+  labs(x = "Friction Level",
+       y = "Z-scored Value",
+       shape = "Data Source") +
+  theme_classic() +
+  theme(
+    text = element_text(size = 18, family = "Helvetica Neue"),
+    axis.title = element_text(face = "bold", size = 26, family = "Helvetica Neue"),
+    axis.title.x = element_text(margin = margin(t = 20)),
+    axis.text = element_text(size = 28, family = "Helvetica Neue"),
+    legend.position = "bottom",
+    legend.box = "vertical",
+    legend.margin = margin(t = 10)
+  )
+
+# Save the plot
+# ggsave(here("figs/combined_plot.png"), 
+#        p_combined, 
+#        width = 20, 
+#        height = 8, 
+#        dpi = 300)
+
+```
