@@ -665,7 +665,7 @@ id_mapping <- setNames(as.character(new_ids_e2b), as.character(unique_ids_e2b))
 # Anonymize IDs, rename the column, and drop the "X" column
 df.e2b_childfc <- df.e2b_childfc %>%
   mutate(id = as.numeric(id_mapping[as.character(subject)])) %>%
-  select(-subject, -X, -date_of_birth) %>%
+  select(-subject, -X) %>%
   select(id, everything())
 
 # Export the dataframes
