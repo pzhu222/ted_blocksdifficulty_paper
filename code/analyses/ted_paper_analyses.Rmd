@@ -2109,27 +2109,6 @@ ggplot(df.e4_vr, aes(x = Friction_Level,
   )
 
 ```
-## Exploratory: Tsimane' Children fisher exact test
-
-```{r}
-
-#just stability trial for now
-
-df.e3childfc |> 
-  filter(trial == "Stability") |> 
-  mutate(median_age = ifelse(age < median(age), "Younger", "Older"),
-         median_age = as.factor(median_age)) |> 
-  select(correct, median_age) |> 
-  #make two dimensional contingency table for fisher exact test, with median age as columns and correct/incorrect as rows
-  table() |> 
-  fisher.test()
-  
-
-```
-
-
-
-
 
 Build Time and Time Estimation
 
@@ -3147,3 +3126,12 @@ p_combined <- ggplot(combined_df, aes(x = Friction_Level,
 #        dpi = 300)
 
 ```
+
+#Session Info
+
+```{r}
+
+sessionInfo()
+
+```
+
